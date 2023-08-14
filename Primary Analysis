@@ -1,0 +1,373 @@
+###Reshani Abayasekara Practicum Code##
+#All work was done via the Niagara Super computer which was connected to via Scinet
+
+#Setting up my workspace
+module load gcc/8.3.0 r/4.1.2
+R
+library(pander)
+library(tidyverse)
+library(registr)#For curve registration
+library(reportRmd)
+library(cowplot)
+library(factoextra)
+library(Hmisc)
+library(gridExtra)
+library(cluster)
+library(fpc)
+library(ggplot2)
+setwd(Sys.getenv("SCRATCH")) #my working directory
+
+#Initial data sets I had access to:
+min8=read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/Acceldatabymin08.txt", sep="|", header=T) 
+min6=read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/Acceldatabymin06.txt", sep="|", header=T) 
+#The above were all saved to my working directory so I did not have to keep loading them in each time. 
+
+#Finding those who qualified to have accelerometer data collected but chose not to at each visit. 
+notparticipating_accel6=filter(accel6,V06APASTAT=="Not participating") #585 are eligible for the study but chose not to participate
+notparticipating_accel8=filter(accel8,V08APASTAT=="Not participating")#276 are eligible for the study but chose not to participate 
+
+#Finding those who participated at each visit with 4 or more valid days:
+accel6=filter((filter(accel6,V06APASTAT=="Worn with data")),V06ANVDAYS>=4)
+accel8=filter((filter(accel8,V08APASTAT=="Worn with data")),V08ANVDAYS>=4)
+save(accel6, file = 'accel6.Rdata') #These are the individuals present at v6 with more than 4 valid days of accelerometer data
+save(accel8, file = 'accel8.Rdata') #These are the individuals present at v8 with more than 4 valid days of accelerometer data
+
+#How many ppl are present at both visits: 
+combined_visit=inner_join(x=accel6,y=accel8, by='ID') #1343 people present at both
+visits_ID=data.frame(ID=combined_visit$ID) #IDs of people present at both 
+save(visits_ID, file = 'visits_ID.Rdata')
+save(combined_visit, file = 'combined_visit.Rdata') #The sample population and their accel data at both visits
+
+##Getting the sample population:
+summary(min6)
+summary(min6$V06MINCnt) #This is where activity count data is stored and the only column with missing values
+min6_adj<-min6%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>%
+  replace(is.na(.), 0) ##Replacing any NA values with 0.
+
+##Mean vs Median day with a Bland-Altman Plot
+#Mean and median day calculations:
+min6_day<-min6_adj%>%
+  group_by(ID,V06MinSequence)%>%
+  summarise(avg_count_mean=mean(V06MINCnt),
+            avg_count_median=median(V06MINCnt))
+
+#create new column for average measurement
+min6_day$avg <- rowMeans(min6_day[,c("avg_count_mean", "avg_count_median")], na.rm=TRUE)
+
+#create new column for difference in measurements
+min6_day$diff <- min6_day$avg_count_mean - min6_day$avg_count_median
+
+#view first six rows of data
+head(min6_day)
+
+#find average difference
+mean_diff <- mean(min6_day$diff)
+
+#find lower 95% confidence interval limits
+lower <- mean_diff - 1.96*sd(min6_day$diff)
+upper <- mean_diff + 1.96*sd(min6_day$diff)
+
+#create Bland-Altman plot
+ggplot(min6_day, aes(x = avg, y = diff)) +
+  geom_point(size=2) +
+  geom_hline(yintercept = mean_diff) +
+  geom_hline(yintercept = lower, color = "red", linetype="dashed") +
+  geom_hline(yintercept = upper, color = "red", linetype="dashed") +
+  ggtitle("Bland-Altman Plot at visit 6") +
+  ylab("Difference mean and median activity count") +
+  xlab("Average activity count")
+#The x-axis of the plot displays the average of the mean and median activity count of each subject per minute and the y-axis displays the difference in between mean and median activity counts per subject per minute (from minute 1 to 1440)
+#The black line represents the average difference between mean and median activity count of each subject per minute while the two red dashed lines represent the 95% confidence interval limits for the average difference.
+#Looking at the plot generated it appears that a good majority of plots lie outside the limit which indicates that there is no agreement between the two measurements.
+  
+
+#Preparing the Median day:
+min6_medday<-min6_adj%>%
+  group_by(ID,V06MinSequence)%>%
+  summarise(avg_count_min=median(V06MINCnt))%>%
+  rename(id=ID)%>%
+  rename(index=V06MinSequence)%>% #This column and the one below had to be renamed to use the registr function
+  rename(value=avg_count_min)%>%
+  as.data.frame()
+
+#Perform curve registration
+medday_reg<-register_fpca(Y = min6_medday, family = "gaussian",Kt = 10, 
+                              Kh = 5, 
+                              npc = 3, 
+                              gradient = FALSE,
+                              warping = "piecewise_linear2",
+                              verbose = 2)
+save(medday_reg,file="medday_reg.Rdata")#Saved to my directory
+
+##Visual of registration
+#Pre-Registration curve
+pre_reg<-ggplot(medday_reg,aes(x=(tstar),y=value,col=id,group=id))+
+  geom_line()+ labs(title = "Median activity count data for all participants on unregistered time at 48 month visit across clusters",
+                    caption = "Data source: Osteoarthritis Initiative (OAI)",
+                    x = "Unregistered time (Minute)", y = "Median activity count",
+                    tag = "Plot 1")+labs(color = "Subject Id")+
+  scale_color_gradient(low="blue", high="grey")+ scale_x_continuous(breaks=seq(0, 1440, 60))
+
+#Warping Plot:
+warping_p_gaus_v6<-ggplot(medday_reg$Y, aes(x = tstar, y = (t_hat*1440), col = (id),group=id))+geom_line() + labs(title = "Parametric inverse warping function at 48 month visit",
+                                                                                                                   caption = "Data source: Osteoarthritis Initiative (OAI)",
+                                                                                                                   x = "Unregistered time (Minute)", y = "Registered time (Minute)",
+                                                                                                                   tag = "Plot 2")+labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 60))+scale_y_continuous(breaks=seq(0, 1440, 60))+scale_color_gradient(low="blue", high="grey") #+theme(text = element_text(size = 30)) #notice the y-axis here was transformed 
+#The multiplication by 1440 was done so it was min-by min scale for the y-axis
+
+#Registration Plot:
+post_reg_gaus_v6<-ggplot(medday_reg,aes(x=(t_hat*1440),y=value,col=id,group=id))+geom_line() +labs(title = "Median activity count data for all participants on registered time at 48 month visit across clusters",
+                                                                                                   caption = "Data source: Osteoarthritis Initiative (OAI)",
+                                                                                                   x = "Registered time (Minute)", y = "Median Activity Count",
+                                                                                                   tag = "Plot 3") +labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 60))+scale_x_continuous(breaks=seq(0, 1440, 60))+scale_color_gradient(low="blue", high="grey")
+#The multiplication by 1440 was done so it was min-by min scale for the y-axis
+
+plot_grid(pre_reg,warping_p_gaus_v6, post_reg_gaus_v6,ncol = 2, nrow = 2) #Plot all 3 together
+
+
+##Define function that extracts slopes
+extract_slopes = function(knot_locations = c(0.2,0.4,0.6,0.8)){ #These values were extracted from the slope output from curve registration
+  knot1_x = knot_locations[1]
+  knot1_y = knot_locations[2]
+  knot2_x = knot_locations[3]
+  knot2_y = knot_locations[4]
+  
+  beta1 = knot1_y / knot1_x
+  beta2 = (knot2_y - knot1_y) / (knot2_x - knot1_x)
+  beta3 = (1 - knot2_y) / (1 - knot2_x)
+  
+  c(beta1,beta2,beta3)
+  #tibble(beta1 = beta1,
+  #      beta2 = beta2,
+  #     beta3 = beta3)
+}
+
+#Apply function above to my results
+slopes_v6<-apply(medday_reg$hinv_beta, 2, extract_slopes) #get slopes
+PC_v6<-medday_reg$fpca_obj$scores #get FPC scores
+
+#Make a matrix
+slope1<-as.matrix(slopes_v6[1,])
+slope2<-as.matrix(slopes_v6[2,])
+slope3<-as.matrix(slopes_v6[3,])
+
+pc1<-as.matrix(PC_v6[,1])
+pc2<-as.matrix(PC_v6[,2])
+pc3<-as.matrix(PC_v6[,3])
+
+matrix_v6<-cbind(slope1,slope2,slope3,pc1,pc2,pc3)
+colnames(matrix_v6)<-c('slope1','slope2','slope3','pc1','pc2','pc3')
+
+#Test correaltion
+corr_v6 <- rcorr(matrix_v6, type = c("pearson"))
+corr_v6 
+
+#Due to correaltion between slope 2 and the others I choose to drop slope 2
+matrix_v6<-cbind(slope1,slope3,pc1,pc2,pc3)
+colnames(matrix_v6)<-c('slope1','slope3','pc1','pc2','pc3')
+
+#Scale all:
+scale_mat<-scale(matrix_v6)
+
+#K diagnostic methods:
+
+#Elbow statistic 
+elb<-fviz_nbclust( 
+  scale_mat,
+  FUNcluster = pam,
+  method = c("wss"),
+  diss = NULL,
+  k.max = 10,
+  nboot = 200,
+  verbose = interactive(),
+  barfill = "steelblue",
+  barcolor = "steelblue",
+  linecolor = "steelblue",
+  print.summary = TRUE,
+) +labs(subtitle="Elbow Method")
+
+#Silhoutte Stat
+sil<-fviz_nbclust(
+  scale_mat,
+  FUNcluster = pam,
+  method = c("silhouette"),
+  diss = NULL,
+  k.max = 15,
+  nboot = 200,
+  verbose = interactive(),
+  barfill = "steelblue",
+  barcolor = "steelblue",
+  linecolor = "steelblue",
+  print.summary = TRUE,
+)+labs(subtitle="Silhouette Method")
+
+#Gap stat
+gap_stat <- fviz_nbclust(scale_mat,pam,"gap_stat")+labs(subtitle = "Gap statistic method") 
+
+#Plot them side by side
+plot_grid(elb,sil,gap_stat ,ncol = 2, nrow = 2)
+
+##Fit the K-medioid:
+k2<-pam(scale_mat,2)
+p1 <- fviz_cluster(k2, geom = "point", data = scale_mat,outlier.color = "black",axes = c(1,5)) + ggtitle("k = 2") #Plot of results
+
+load('OAI_KL_JSW_sample,Rdata') #This is the outcome dataset I was provided for all subjects at all visits
+
+#Separate groups:
+grouper<-(cbind(visits_ID,k2$clustering)) #This adds the IDs to the established clustering
+grouper$clusters<-grouper[,2] #Rename the clusters column
+g3<-c(grouper[,3]) #Extract the clusters
+g1<-(grouper[,1]) #Extract the IDs
+
+cluster_g<-filter(data.frame(cbind(g1,g3)),g3==1) #Cluster 1 with ID
+cluster_g2<-filter(data.frame(cbind(g1,g3)),g3==2) #Cluster 2 with ID
+
+#Get IDS for each cluster
+gr1<-c(cluster_g$g1) #ids list for cluster 1
+gr2<-c(cluster_g2$g1) #ids list for cluster 2
+
+##Merging with output data:
+OAI_KL_JSW_sample$clusters<-OAI_KL_JSW_sample$ID #Add replicate of IDs so I can match this to cluster identity 
+
+OAI_KL_JSW_sample_edit<-OAI_KL_JSW_sample%>%
+  group_by(ID)%>%
+  transform(clusters=ifelse(clusters%in%gr1,1,2)) #If ID is in the cluster 1 add 1 if not add 2
+
+save(OAI_KL_JSW_sample_edit,file='OAI_KL_JSW_sample_edit.Rdata')##Saving the above dataframe I created
+
+###Cluster Demographics at baseline:
+cluster_demo<-OAI_KL_JSW_sample_edit%>%
+  dplyr::filter(VISIT=='V06')
+
+##Sex
+sex<-cluster_demo%>%
+  count(SEX, clusters) %>%
+  group_by(clusters) %>%
+  # calculate percent within cluster
+  mutate(n = (n / sum(n)))
+
+sex_p<-ggplot(sex, aes(x=SEX, y=n, fill=(as.factor(clusters)))) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_brewer(palette="Paired")+ggtitle('Percent of males vs. females in each cluster')+ 
+  xlab("Sex")+
+  ylab("Percent of Subjects")+ guides(fill=guide_legend(title="Cluster"))+
+  theme_minimal()+theme(text = element_text(size = 20))+scale_y_continuous(labels = scales::percent_format())
+
+#Race
+race<-cluster_demo%>%
+  count(RACE, clusters) %>%
+  group_by(clusters) %>%
+  # calculate percent within cluster
+  mutate(n = (n / sum(n)))
+
+race_p<-ggplot(race, aes(x=RACE, y=n, fill=(as.factor(clusters)))) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_brewer(palette="Paired")+ggtitle('Percent of white vs. non-white subjects in each cluster')+ 
+  xlab("Race")+
+  ylab("Percent of Subjects")+ guides(fill=guide_legend(title="Cluster"))+
+  theme_minimal()+theme(text = element_text(size = 20))+scale_y_continuous(labels = scales::percent_format())
+
+age_p<-ggplot(cluster_demo, aes(x=AGE))+
+  geom_histogram(color="blue", fill="lightblue")+
+  facet_grid(clusters ~ .)+ggtitle('Age across both clusters')+ 
+  xlab("Age")+
+  ylab("Number of Subjects")+
+  theme_minimal()+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 20))
+
+#BMI
+bmi_p<-ggplot(cluster_demo, aes(x=BMI))+
+  geom_histogram(color="blue", fill="lightblue")+
+  facet_grid(clusters ~ .)+ggtitle('BMI across both clusters')+ 
+  xlab("BMI")+
+  ylab("Number of Subjects")+
+  theme_minimal()+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 20))
+
+plot_grid(race_p,sex_p, age_p,bmi_p,ncol = 2, nrow = 2)  ##Plotted all together as a figure
+
+##Summary for age and BMI:
+ddply(cluster_demo, "clusters", summarise, grp.mean=mean(AGE)) #Age
+
+#BMI in each cluster
+bmi_c1<-cluster_demo%>%
+  dplyr::filter(clusters==1)
+bmi_c2<-cluster_demo%>%
+  dplyr::filter(clusters==2)
+mean(bmi_c1)
+mean(bmi_c2)
+
+
+##Cluster Specific registration plots:
+reg_output<-medday_reg$Y
+
+names(cluster_demo)[1] ="id" #Rename to lower case to allow inner_join function
+
+combo_table<-inner_join(reg_output,cluster_demo,by="id") #registration and demo details:
+
+
+pre_reg<-ggplot(combo_table,aes(x=(tstar),y=value,group=id))+geom_line(colour="purple")+scale_colour_brewer()+labs(title = "Median activity count data for all participants on registered time at 48 month visit across clusters",
+                                                                                                                   caption = "Data source: Osteoarthritis Initiative (OAI)",
+                                                                                                                   x = "Unregistered time (Minute)", y = "Median Activity Count",
+                                                                                                                   tag = "Plot 1") + scale_x_continuous(breaks=seq(0, 1440, 60))
+warp_pre<-pre_reg+facet_grid(rows = vars(clusters))+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 15))
+
+
+#Registration Plot:
+post_reg_gaus_v6<-ggplot(combo_table,aes(x=(t_hat*1440),y=value,group=id))+geom_line(colour="purple") +labs(title = "Median activity count data for all participants on registered time at 48 month visit across clusters",
+                                                                                                            caption = "Data source: Osteoarthritis Initiative (OAI)",
+                                                                                                            x = "Registered time (Minute)", y = "Median Activity Count",
+                                                                                                            tag = "Plot 2") +scale_x_continuous(breaks=seq(0, 1440, 60))+scale_x_continuous(breaks=seq(0, 1440, 60))
+warp_post<-post_reg_gaus_v6+facet_grid(rows = vars(clusters))+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 15))
+
+plot_grid(warp_pre,warp_post,ncol = 1, nrow = 2)
+
+
+###Summaries for each cluster:
+
+#Cluster 1
+reg_output_c1<-reg_output%>%
+  dplyr::filter(id%in%gr1) #gr1 is the IDs in cluster 1 
+library(data.table)
+tab<-setDT(reg_output_c1)[, mean(value), by = id] #mean activity for each person 
+summary(tab$V1)
+
+#Cluster 2
+reg_output_c2<-reg_output%>%
+  dplyr::filter(id%in%gr2) #gr2 is the IDs in cluster 2
+tab2<-setDT(reg_output_c2)[, mean(value), by = id]  #mean activity for each person
+summary(tab2$V1)
+
+
+##How many are meeting CDC guidelines in each cluster:
+##75 minutes of vigorous/ week--> crude 
+vig_activity<-combo_table%>% #from above
+  group_by(id)%>%
+  transform(MV_cutpoint=ifelse(value>=5999,1,0))%>%  #MV troiano cutpoint for vig activity 
+  group_by(id)%>%
+  summarise(MV_cutpoint=sum(MV_cutpoint))%>%
+  transform(meet_cutpoint=ifelse(MV_cutpoint<75/7,1,2))%>%  #1 if they do not meet the guidelines and 2 if they do.
+  transform(clusters=ifelse(id %in% clus1$id,1,2))
+
+chek_vig<-vig_activity%>%
+  group_by(clusters)%>%
+  count(meet_cutpoint)
+chek_vig
+
+##Moderate activity:
+mod_activity<-combo_table%>% 
+  group_by(id)%>%
+  transform(MV_cutpoint=ifelse(value %in% seq(2020,5998),1,0))%>%  #MV troiano cutpoint for mod activity 
+  group_by(id)%>%
+  summarise(MV_cutpoint=sum(MV_cutpoint))%>%
+  transform(meet_cutpoint=ifelse(MV_cutpoint<150/7,1,2))%>%  #1 if they do not meet the guidelines and 2 if they do.
+  transform(clusters=ifelse(id %in% clus1$id,1,2))
+
+mod_counts<-mod_activity%>%
+  group_by(clusters)%>%
+  count(meet_cutpoint)
+
+mod_counts
+
+###END of primary Analysis
+
+
