@@ -342,7 +342,7 @@ summary(tab2$V1)
 ##75 minutes of vigorous/ week--> crude 
 vig_activity<-combo_table%>% #from above
   group_by(id)%>%
-  transform(MV_cutpoint=ifelse(value>=5999,1,0))%>%  #MV troiano cutpoint for vig activity 
+  transform(MV_cutpoint=ifelse(value>=5999,1,0))%>%  #Vig PA cutpoint 
   group_by(id)%>%
   summarise(MV_cutpoint=sum(MV_cutpoint))%>%
   transform(meet_cutpoint=ifelse(MV_cutpoint<75/7,1,2))%>%  #1 if they do not meet the guidelines and 2 if they do.
@@ -356,7 +356,7 @@ chek_vig
 ##Moderate activity:
 mod_activity<-combo_table%>% 
   group_by(id)%>%
-  transform(MV_cutpoint=ifelse(value %in% seq(2020,5998),1,0))%>%  #MV troiano cutpoint for mod activity 
+  transform(MV_cutpoint=ifelse(value %in% seq(2020,5998),1,0))%>%  #Mod PA cutpoint  
   group_by(id)%>%
   summarise(MV_cutpoint=sum(MV_cutpoint))%>%
   transform(meet_cutpoint=ifelse(MV_cutpoint<150/7,1,2))%>%  #1 if they do not meet the guidelines and 2 if they do.
