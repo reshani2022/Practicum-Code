@@ -127,7 +127,7 @@ plot_grid(pre_reg,warping_p_gaus_v6, post_reg_gaus_v6,ncol = 2, nrow = 2) #Plot 
 
 
 ##Define function that extracts slopes
-extract_slopes = function(knot_locations = c(0.2,0.4,0.6,0.8)){ #These values were extracted from the slope output from curve registration
+extract_slopes = function(knot_locations = c(0.2,0.4,0.6,0.8)){ #These values were extracted from the knot output from curve registration
   knot1_x = knot_locations[1]
   knot1_y = knot_locations[2]
   knot2_x = knot_locations[3]
