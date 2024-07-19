@@ -1,12 +1,10 @@
-###Reshani Abayasekara Practicum Code##
-#All work was done via the Niagara Super computer which was connected to via Scinet
-
-#Setting up my workspace
-module load gcc/8.3.0 r/4.1.2 #Loading the R version I used for my analysis
+```{r Packages Used}
+module load gcc/8.3.0 r/4.1.2
 R
+library(mmrm)
 library(pander)
 library(tidyverse)
-library(registr)#For curve registration
+library(registr)
 library(reportRmd)
 library(cowplot)
 library(factoextra)
@@ -14,14 +12,35 @@ library(Hmisc)
 library(gridExtra)
 library(cluster)
 library(fpc)
-library(ggplot2)
-setwd(Sys.getenv("SCRATCH")) #my working directory
+library(pROC)
+library(datawizard)
+library(pracma)
+library(GLMMadaptive)
+setwd(Sys.getenv("SCRATCH"))
+setwd(("/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac"))
+```
 
-#Initial data sets I had access to:
+Accelerometer data available
+```{r OAI data}
 min8=read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/Acceldatabymin08.txt", sep="|", header=T) 
 min6=read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/Acceldatabymin06.txt", sep="|", header=T) 
-#The above were all saved to my working directory so I did not have to keep loading them in each time. 
+accel6=read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/Accelerometry06.txt", sep="|", header=T) 
+accel8=read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/Accelerometry08.txt", sep="|", header=T)
+```
 
+```{r Files geneerated as part of cleaning}
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData") #This is the outcomes data but it must be called as OAI_KL_JSW_data that's how to work with it.
+load("outcomes_v68.RData")#This is the outcomes data for visit 6 and visit 8
+load("unreg_times_v8.Rdata") #Unregistered data
+load("unreg_times_v6.Rdata")#unregistered data
+load("demo_v6.Rdata")#AURC data with outcomes for visit 6 
+load("demo_v8.Rdata")#AURC data with outcomes for visit 8
+load('visits_ID.Rdata')#ID list of sample pop
+```
+
+Sample population determination 
+```{r Sample population}
+#I am interested in those who have 4-7 valid days:
 #Finding those who qualified to have accelerometer data collected but chose not to at each visit. 
 notparticipating_accel6=filter(accel6,V06APASTAT=="Not participating") #585 are eligible for the study but chose not to participate
 notparticipating_accel8=filter(accel8,V08APASTAT=="Not participating")#276 are eligible for the study but chose not to participate 
@@ -35,19 +54,65 @@ save(accel8, file = 'accel8.Rdata') #These are the individuals present at v8 wit
 #How many ppl are present at both visits: 
 combined_visit=inner_join(x=accel6,y=accel8, by='ID') #1343 people present at both
 visits_ID=data.frame(ID=combined_visit$ID) #IDs of people present at both 
-save(visits_ID, file = 'visits_ID.Rdata')
-save(combined_visit, file = 'combined_visit.Rdata') #The sample population and their accel data at both visits
+save(visits_ID, file = 'visits_ID.Rdata') ##This is my ID's of the sample pop
+```
 
-##Getting the sample population:
-summary(min6)
-summary(min6$V06MINCnt) #This is where activity count data is stored and the only column with missing values
-min6_adj<-min6%>%
-  dplyr::filter(ID %in% visits_ID$ID)%>%
-  replace(is.na(.), 0) ##Replacing any NA values with 0.
+Initial data exploration:
+```{r Number of obese individuals}
+combo<-inner_join(OAI_KL_JSW_data,visits_ID,by="ID")
 
-##Mean vs Median day with a Bland-Altman Plot
-#Mean and median day calculations:
-min6_day<-min6_adj%>%
+combo_edit<-combo%>%
+  dplyr::filter(VISIT=="V00")
+#I see that we have 465 people who are obese, 540 who are overweight, 335 who are healthy and 3 who are underweight
+
+combo_edit<-combo%>%
+  dplyr::filter(VISIT=="V06")%>%
+  transform(obese_over=as.factor(ifelse(BMI>=25,"yes","no")))
+#We see that 470 are obese and 871 are not obese while 2 did not have valid BMI readings.
+#We see that 987 are obese or overweight while 354 are not while 2 did not have valid BMI readings.
+```
+
+```{r Missing Values}
+#From the sample population how many ppl are missing activity count values?
+#Visit6:
+min6_pop<-min6%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+sum(is.na(min6_pop$V06MINCnt))
+min6_pop=min6_pop %>%  
+  group_by(ID) %>%  
+  summarise(Missing=sum(is.na(V06MINCnt)), .groups="drop")%>%
+  dplyr::filter(Missing>0)
+##We see that ID 9718951 had 15 missing counts back to back and ID 9732751 had 1 missing count.
+#Visit8:
+min8_pop<-min8%>%
+  dplyr::filter(ID %in% visits_ID$ID)#gets us n=1343
+sum(is.na(min8_pop$V08MINCnt))#73 missing values across the 4-7 days
+min8_pop=min8_pop %>%  
+  group_by(ID) %>%  
+  summarise(Missing=sum(is.na(V08MINCnt)), .groups="drop")%>%
+  dplyr::filter(Missing>0)
+#We see that ID 9401202  had 73 missing counts over their person Notice that they are back to back 
+
+##Let's replace the missing values with 0
+min6=min6%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+min6[is.na(min6)] <- 0
+save(min6,file="min6.Rdata")#Min-min accel data for our sample pop that is cleaned 
+
+min8=min8%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+min8[is.na(min8)] <- 0
+save(min8,file="min8.Rdata")#Min-min accel data for our sample pop that is cleaned 
+```
+Median vs mean day
+```{r Bland Altman plot}
+#Using the cleaned data
+load("min6.Rdata")
+load("min8.Rdata")
+
+#Accelerometer data at visit 6 for all subjects present at both visit 6,8 
+#Mean and median day:
+min6_day<-na.omit(min6)%>%
   group_by(ID,V06MinSequence)%>%
   summarise(avg_count_mean=mean(V06MINCnt),
             avg_count_median=median(V06MINCnt))
@@ -68,306 +133,1349 @@ mean_diff <- mean(min6_day$diff)
 lower <- mean_diff - 1.96*sd(min6_day$diff)
 upper <- mean_diff + 1.96*sd(min6_day$diff)
 
+#load ggplot2
+library(ggplot2)
 #create Bland-Altman plot
-ggplot(min6_day, aes(x = avg, y = diff)) +
+bplot_v6<-ggplot(min6_day, aes(x = avg, y = diff)) +
   geom_point(size=2) +
   geom_hline(yintercept = mean_diff) +
   geom_hline(yintercept = lower, color = "red", linetype="dashed") +
   geom_hline(yintercept = upper, color = "red", linetype="dashed") +
-  ggtitle("Bland-Altman Plot at visit 6") +
-  ylab("Difference mean and median activity count") +
-  xlab("Average activity count")
-#The x-axis of the plot displays the average of the mean and median activity count of each subject per minute and the y-axis displays the difference in between mean and median activity counts per subject per minute (from minute 1 to 1440)
-#The black line represents the average difference between mean and median activity count of each subject per minute while the two red dashed lines represent the 95% confidence interval limits for the average difference.
-#Looking at the plot generated it appears that a good majority of plots lie outside the limit which indicates that there is no agreement between the two measurements.
-  
+  labs(title="48-month",x = "Average activity count", y = "Difference mean and median activity count",tag = "A")+
+  theme(text = element_text(size = 20))+
+  theme(axis.title=element_text(size=20))+
+  theme(legend.text=element_text(size=18),legend.title=element_text(size=20))+
+  theme(plot.title = element_text(size=22,face="bold"))
 
-#Preparing the Median day:
-min6_medday<-min6_adj%>%
+##Visit 8 Bland Altman Plot
+
+min8_day<-na.omit(min8)%>%
+  group_by(ID,V08MinSequence)%>%
+  summarise(avg_count_mean=mean(V08MINCnt),
+            avg_count_median=median(V08MINCnt))
+
+#create new column for average measurement
+min8_day$avg <- rowMeans(min8_day[,c("avg_count_mean", "avg_count_median")], na.rm=TRUE)
+
+#create new column for difference in measurements
+min8_day$diff <- min8_day$avg_count_mean - min8_day$avg_count_median
+
+#view first six rows of data
+head(min8_day)
+
+#find average difference
+mean_diff <- mean(min8_day$diff)
+
+#find lower 95% confidence interval limits
+lower <- mean_diff - 1.96*sd(min8_day$diff)
+upper <- mean_diff + 1.96*sd(min8_day$diff)
+
+#load ggplot2
+library(ggplot2)
+#create Bland-Altman plot
+barplot_v8<-ggplot(min8_day, aes(x = avg, y = diff)) +
+  geom_point(size=2) +
+  geom_hline(yintercept = mean_diff) +
+  geom_hline(yintercept = lower, color = "red", linetype="dashed") +
+  geom_hline(yintercept = upper, color = "red", linetype="dashed") +
+  labs(title="72-month",x = "Average activity count", y = "Difference mean and median activity count",tag = "B")+
+  theme(text = element_text(size = 20))+
+  theme(axis.title=element_text(size=20))+
+  theme(legend.text=element_text(size=18),legend.title=element_text(size=20))+
+  theme(plot.title = element_text(size=22,face="bold"))
+
+grid.arrange(bplot_v6,barplot_v8,ncol = 1, nrow = 2)
+
+```
+After examining the bland altman plots we decided to move ahead with a median day. Below is how the median day was generated.
+```{r Median Day}
+load("min6.Rdata")#Cleaned min data
+load("min8.Rdata")#Cleaned min data
+min6_medday<-min6%>%
   group_by(ID,V06MinSequence)%>%
-  summarise(avg_count_min=median(V06MINCnt))%>%
+  summarise(value=median(V06MINCnt))%>%
   rename(id=ID)%>%
-  rename(index=V06MinSequence)%>% #This column and the one below had to be renamed to use the registr function
-  rename(value=avg_count_min)%>%
+  rename(index=V06MinSequence)%>%
+  dplyr::filter(id %in%visits_ID$ID)%>%
+  as.data.frame()##This must be done to run registration
+min6_medday <- replace(min6_medday, is.na(min6_medday), 0)
+
+min8_medday<-min8%>%
+  group_by(ID,V08MinSequence)%>%
+  summarise(value=median(V08MINCnt))%>%
+  rename(id=ID)%>%
+  rename(index=V08MinSequence)%>%
+  dplyr::filter(id %in% visits_ID$ID)%>%
+  as.data.frame()##This must be done to run registration
+min8_medday <- replace(min8_medday, is.na(min8_medday), 0)
+
+```
+Running curve registration:
+```{r Curve registration}
+#These are the saved files
+min6_medday_reg<-register_fpca(Y=min6_medday,family = "gaussian",
+                  npc = 2, 
+                   Kt=8,
+                    Kh=4,
+                   gradient = FALSE,
+                   warping = "piecewise_linear2")
+
+save(min6_medday_reg,file="min6_medday_reg.Rdata")
+
+min8_medday_reg<-register_fpca(Y=min8_medday,family = "gaussian",
+                  npc = 2, 
+                   Kt=8,
+                    Kh=4,
+                   gradient = FALSE,
+                   warping = "piecewise_linear2")
+
+save(min8_medday_reg,file="min8_medday_reg.Rdata")
+
+```
+Generating registration plots
+```{r Legends}
+#Plots
+library(gghighlight)
+library(grid)
+load("min6_medday_reg.Rdata")
+load("visits_ID.Rdata")
+preds<-data.frame(pred_value=(min6_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min6_medday_reg$Y,preds)
+
+#Replace ids with numbers
+id_rep<-data.frame(id=visits_ID$ID,p_id=c(1:1343))
+combo_rep<-inner_join(combo,id_rep,by="id")
+
+
+test<-ggplot(combo_rep,aes(x=(tstar),y=value,col=p_id,group=p_id))+
+  geom_line()+scale_color_gradient(low="blue", high="grey")+scale_color_viridis_c(na.value="white", limits = c(1, 1343),
+                       breaks = c(1, 672,1343), 
+                       guide = "colourbar")+theme(legend.position = "bottom")+ labs(x = "Unregistered time (Minute)", y = "Median activity count",
+              tag = "A")+labs(color = "Participant Number")+
+  scale_x_continuous(breaks=seq(0, 1440, 60))+ggtitle("48-month visit")+theme(axis.title=element_text(size=15))+theme(text = element_text(size = 15))+gghighlight(p_id==168,label_key=p_id,unhighlighted_params = list(colour = NULL, alpha = 0.3))+theme(plot.title = element_text(size=22,face="bold"))                                                            
+```
+
+```{r Curve Registration Plots}
+library(gghighlight)
+library(grid)
+load("min6_medday_reg.Rdata")
+
+preds<-data.frame(pred_value=(min6_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min6_medday_reg$Y,preds)
+
+#Replace ids with numbers
+id_rep<-data.frame(id=visits_ID$ID,p_id=c(1:1343))
+combo_rep<-inner_join(combo,id_rep,by="id")
+
+pre_6reg<-ggplot(combo_rep,aes(x=(tstar),y=value,col=p_id,group=p_id))+geom_line(show.legend = FALSE)+labs(x = "Unregistered time (Minute)", y = "Median activity count",tag = "A")+labs(color = "Participant Id")+
+  scale_x_continuous(breaks=seq(0, 1440, 120))+theme(text = element_text(size = 8))+theme(axis.title=element_text(size=8))+ scale_color_viridis_c()+ggtitle("48-month visit")+theme(plot.title = element_text(size=10,face="bold"))+scale_y_continuous(breaks=seq(0, 8000, 2000))+theme(axis.title=element_text(size=8))+ geom_line(aes(color = p_id, group = p_id), size = 0.5,color="red",
+            data = ~ subset(., p_id %in% c(168)))
+
+#Warping
+warping_6p_gaus<-ggplot(combo_rep, aes(x = tstar, y = (t_hat*1440), col = (p_id)))+
+    geom_line(show.legend = FALSE) + labs(x = "Unregistered time (Minute)", y = "Registered time (Minute)",
+              tag = "C")+labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_y_continuous(breaks=seq(0, 1440, 120))+scale_color_gradient(low="blue", high="grey")+theme(text = element_text(size = 20))+theme(text = element_text(size = 10))+theme(axis.title=element_text(size=10))+scale_color_viridis_c()+theme(axis.title=element_text(size=8))+theme(text = element_text(size = 8))+ geom_line(aes(color = p_id, group = p_id), size = 0.5,color="red",
+            data = ~ subset(., p_id %in% c(168)))
+
+##Post registration:
+post_reg_gaus_6p<-ggplot(combo_rep,aes(x=(t_hat*1440),y=value,col=(p_id),group=p_id))+
+    geom_line(show.legend = FALSE) +labs(x = "Registered time (Minute)", y = "Median Activity Count",tag = "E") +labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_color_gradient(low="blue", high="grey")+theme(text = element_text(size = 10))+theme(text = element_text(size = 10))+theme(axis.title=element_text(size=10))+scale_color_viridis_c()+scale_y_continuous(breaks=seq(0, 8000, 2000))+theme(axis.title=element_text(size=8))+theme(text = element_text(size = 8))+ geom_line(aes(color = p_id, group = p_id), size = 0.5,color="red",
+            data = ~ subset(., p_id %in% c(168)))
+
+#Visit 8
+library(gghighlight)
+library(grid)
+load("min8_medday_reg.Rdata")
+
+preds<-data.frame(pred_value=(min8_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min8_medday_reg$Y,preds)
+
+#Replace ids with numbers
+id_rep<-data.frame(id=visits_ID$ID,p_id=c(1:1343))
+combo_rep<-inner_join(combo,id_rep,by="id")
+
+#Pre-registration curve
+pre_8reg<-ggplot(combo_rep,aes(x=(tstar),y=value,col=p_id,group=p_id))+
+    geom_line(show.legend = FALSE)+ labs(x = "Unregistered time (Minute)", y = "Median activity count",
+              tag = "B")+labs(color = "Subject Id")+
+  scale_color_gradient(low="blue", high="grey")+ scale_x_continuous(breaks=seq(0, 1440, 120))+theme(text = element_text(size = 20))+theme(text = element_text(size = 10))+theme(text = element_text(size = 10))+scale_color_viridis_c()+theme(axis.title=element_text(size=10))+ggtitle("72-month visit")+scale_y_continuous(breaks=seq(0, 8000, 2000))+theme(axis.title=element_text(size=8))+theme(plot.title = element_text(size=10,face="bold"))+theme(text = element_text(size = 8))+ geom_line(aes(color = p_id, group = p_id), size = 0.5,color="red",
+            data = ~ subset(., p_id %in% c(168)))
+
+#Warping
+warping_8p_gaus<-ggplot(combo_rep, aes(x = tstar, y = (t_hat*1440), col = (id)))+
+    geom_line(show.legend = FALSE)+ labs( x = "Unregistered time (Minute)", y = "Registered time (Minute)",
+              tag = "D")+labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_y_continuous(breaks=seq(0, 1440, 120))+scale_color_gradient(low="blue", high="grey")+theme(text = element_text(size = 10))+scale_color_viridis_c()+theme(axis.title=element_text(size=8))+theme(text = element_text(size = 8))+ geom_line(aes(color = p_id, group = p_id), size = 0.5,color="red",
+            data = ~ subset(., p_id %in% c(168)))
+
+##Post registration:
+post_reg_gaus_8p<-ggplot(combo_rep,aes(x=(t_hat*1440),y=value,group=p_id,col=(p_id)))+
+    geom_line(show.legend = FALSE) +labs(x = "Registered time (Minute)", y = "Median Activity Count",
+              tag = "F") +labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_color_gradient(low="blue", high="grey")+theme(text = element_text(size =10))+scale_color_viridis_c()+theme(axis.title=element_text(size=8))+ scale_y_continuous(breaks=seq(0, 8000, 2000))+theme(text = element_text(size = 8))+ geom_line(aes(color = p_id, group = p_id), size =0.5,color="red",
+            data = ~ subset(., p_id %in% c(168)))
+
+mix_plot<-grid.arrange(pre_6reg,pre_8reg,
+                  warping_6p_gaus, warping_8p_gaus,
+                  post_reg_gaus_6p,post_reg_gaus_8p,
+                  ncol = 2, nrow = 3)
+
+ggsave(plot= mix_plot, filename = '/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/comboplot.pdf',width = 297,
+  height = 210,
+  units = c( "mm"))
+```
+
+
+Let's look at how many individuals met the recommended CDC guidelines at each visit.
+```{r CDC guidelines v6}
+mod_ac<-min6_medday_reg$Y%>% #The registered output for visit 6
+  rename(ID=id)%>% 
+  transform(t_hat=t_hat*1440)%>%
+  dplyr::filter(between(value,2020,5998))%>%
+  group_by(ID)%>%
+  mutate(t_hatdiff=t_hat-lag(t_hat))%>%#Find the difference between the minute recorded before which had mod activity. This was done to see if the times are more than a minute apart or not. 
+  mutate(total_time_mod=ifelse(t_hatdiff>=1,1,t_hat%%1))%>% #Record if more than a min apart or not
+  #Deal with the first NA values for each subject
+  mutate(total_time_mod=ifelse(is.na(total_time_mod),"missing",total_time_mod))%>%
+  mutate(total_time_mod=as.numeric(ifelse(total_time_mod=="missing",
+                               ifelse(lead(t_hat)-t_hat>=1,1,t_hat%%1),total_time_mod)
+         ))%>%
+  group_by(ID)%>%
+  mutate(total_time_mod=ifelse(is.na(total_time_mod),t_hat%%1,total_time_mod))%>% #Some subjects only have 1 occurrence of light activity recorded so we need to account for their record
+  summarise(total_time_mod=sum(total_time_mod))%>%
   as.data.frame()
 
-#Perform curve registration
-medday_reg<-register_fpca(Y = min6_medday, family = "gaussian",Kt = 10, 
-                              Kh = 5, 
-                              npc = 3, 
-                              gradient = FALSE,
-                              warping = "piecewise_linear2",
-                              verbose = 2)
-save(medday_reg,file="medday_reg.Rdata")#Saved to my directory
-
-##Visual of registration
-#Pre-Registration curve
-pre_reg<-ggplot(medday_reg,aes(x=(tstar),y=value,col=id,group=id))+
-  geom_line()+ labs(title = "Median activity count data for all participants on unregistered time at 48 month visit across clusters",
-                    caption = "Data source: Osteoarthritis Initiative (OAI)",
-                    x = "Unregistered time (Minute)", y = "Median activity count",
-                    tag = "Plot 1")+labs(color = "Subject Id")+
-  scale_color_gradient(low="blue", high="grey")+ scale_x_continuous(breaks=seq(0, 1440, 60))
-
-#Warping Plot:
-warping_p_gaus_v6<-ggplot(medday_reg$Y, aes(x = tstar, y = (t_hat*1440), col = (id),group=id))+geom_line() + labs(title = "Parametric inverse warping function at 48 month visit",
-                                                                                                                   caption = "Data source: Osteoarthritis Initiative (OAI)",
-                                                                                                                   x = "Unregistered time (Minute)", y = "Registered time (Minute)",
-                                                                                                                   tag = "Plot 2")+labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 60))+scale_y_continuous(breaks=seq(0, 1440, 60))+scale_color_gradient(low="blue", high="grey") #+theme(text = element_text(size = 30)) #notice the y-axis here was transformed 
-#The multiplication by 1440 was done so it was min-by min scale for the y-axis
-
-#Registration Plot:
-post_reg_gaus_v6<-ggplot(medday_reg,aes(x=(t_hat*1440),y=value,col=id,group=id))+geom_line() +labs(title = "Median activity count data for all participants on registered time at 48 month visit across clusters",
-                                                                                                   caption = "Data source: Osteoarthritis Initiative (OAI)",
-                                                                                                   x = "Registered time (Minute)", y = "Median Activity Count",
-                                                                                                   tag = "Plot 3") +labs(color = "Subject Id")+scale_x_continuous(breaks=seq(0, 1440, 60))+scale_x_continuous(breaks=seq(0, 1440, 60))+scale_color_gradient(low="blue", high="grey")
-#The multiplication by 1440 was done so it was min-by min scale for the y-axis
-
-plot_grid(pre_reg,warping_p_gaus_v6, post_reg_gaus_v6,ncol = 2, nrow = 2) #Plot all 3 together
+##Let's count how many people have more than or equal to 150/7 min a day
+mod_count_6<-mod_ac%>%
+  dplyr::filter(total_time_mod>=150/7)
+dim(mod_count_6) #Tells us how many people meet these recommendations which is 17.
 
 
-##Define function that extracts slopes
-extract_slopes = function(knot_locations = c(0.2,0.4,0.6,0.8)){ #These values were extracted from the knot output from curve registration
-  knot1_x = knot_locations[1]
-  knot1_y = knot_locations[2]
-  knot2_x = knot_locations[3]
-  knot2_y = knot_locations[4]
-  
-  beta1 = knot1_y / knot1_x
-  beta2 = (knot2_y - knot1_y) / (knot2_x - knot1_x)
-  beta3 = (1 - knot2_y) / (1 - knot2_x)
-  
-  c(beta1,beta2,beta3)
-  #tibble(beta1 = beta1,
-  #      beta2 = beta2,
-  #     beta3 = beta3)
-}
-
-#Apply function above to my results
-slopes_v6<-apply(medday_reg$hinv_beta, 2, extract_slopes) #get slopes
-PC_v6<-medday_reg$fpca_obj$scores #get FPC scores
-
-#Make a matrix
-slope1<-as.matrix(slopes_v6[1,])
-slope2<-as.matrix(slopes_v6[2,])
-slope3<-as.matrix(slopes_v6[3,])
-
-pc1<-as.matrix(PC_v6[,1])
-pc2<-as.matrix(PC_v6[,2])
-pc3<-as.matrix(PC_v6[,3])
-
-matrix_v6<-cbind(slope1,slope2,slope3,pc1,pc2,pc3)
-colnames(matrix_v6)<-c('slope1','slope2','slope3','pc1','pc2','pc3')
-
-#Test correaltion
-corr_v6 <- rcorr(matrix_v6, type = c("pearson"))
-corr_v6 
-
-#Due to correaltion between slope 2 and the others I choose to drop slope 2
-matrix_v6<-cbind(slope1,slope3,pc1,pc2,pc3)
-colnames(matrix_v6)<-c('slope1','slope3','pc1','pc2','pc3')
-
-#Scale all:
-scale_mat<-scale(matrix_v6)
-
-#K diagnostic methods:
-
-#Elbow statistic 
-elb<-fviz_nbclust( 
-  scale_mat,
-  FUNcluster = pam,
-  method = c("wss"),
-  diss = NULL,
-  k.max = 10,
-  nboot = 200,
-  verbose = interactive(),
-  barfill = "steelblue",
-  barcolor = "steelblue",
-  linecolor = "steelblue",
-  print.summary = TRUE,
-) +labs(subtitle="Elbow Method")
-
-#Silhoutte Stat
-sil<-fviz_nbclust(
-  scale_mat,
-  FUNcluster = pam,
-  method = c("silhouette"),
-  diss = NULL,
-  k.max = 15,
-  nboot = 200,
-  verbose = interactive(),
-  barfill = "steelblue",
-  barcolor = "steelblue",
-  linecolor = "steelblue",
-  print.summary = TRUE,
-)+labs(subtitle="Silhouette Method")
-
-#Gap stat
-gap_stat <- fviz_nbclust(scale_mat,pam,"gap_stat")+labs(subtitle = "Gap statistic method") 
-
-#Plot them side by side
-plot_grid(elb,sil,gap_stat ,ncol = 2, nrow = 2)
-
-##Fit the K-medioid:
-k2<-pam(scale_mat,2)
-p1 <- fviz_cluster(k2, geom = "point", data = scale_mat,outlier.color = "black",axes = c(1,5)) + ggtitle("k = 2") #Plot of results
-
-load('OAI_KL_JSW_sample,Rdata') #This is the outcome dataset I was provided for all subjects at all visits
-
-#Separate groups:
-grouper<-(cbind(visits_ID,k2$clustering)) #This adds the IDs to the established clustering
-grouper$clusters<-grouper[,2] #Rename the clusters column
-g3<-c(grouper[,3]) #Extract the clusters
-g1<-(grouper[,1]) #Extract the IDs
-
-cluster_g<-filter(data.frame(cbind(g1,g3)),g3==1) #Cluster 1 with ID
-cluster_g2<-filter(data.frame(cbind(g1,g3)),g3==2) #Cluster 2 with ID
-
-#Get IDS for each cluster
-gr1<-c(cluster_g$g1) #ids list for cluster 1
-gr2<-c(cluster_g2$g1) #ids list for cluster 2
-
-##Merging with output data:
-OAI_KL_JSW_sample$clusters<-OAI_KL_JSW_sample$ID #Add replicate of IDs so I can match this to cluster identity 
-
-OAI_KL_JSW_sample_edit<-OAI_KL_JSW_sample%>%
+##Total time in vig activity:
+vig_ac<-min6_medday_reg$Y%>% #The registered output for visit 6
+  rename(ID=id)%>% 
+  transform(t_hat=t_hat*1440)%>%
+  dplyr::filter(value>=5999)%>%
   group_by(ID)%>%
-  transform(clusters=ifelse(clusters%in%gr1,1,2)) #If ID is in the cluster 1 add 1 if not add 2
+  mutate(t_hatdiff=t_hat-lag(t_hat))%>%#Find the difference between the minute recorded before which had mvig activity. This was done to see if the times are more than a minute apart or not. 
+  mutate(total_time_mvig=ifelse(t_hatdiff>=1,1,t_hat%%1))%>% #Record if more than a min apart or not
+  #Deal with the first NA values for each subject
+  mutate(total_time_mvig=ifelse(is.na(total_time_mvig),"missing",total_time_mvig))%>%
+  mutate(total_time_mvig=as.numeric(ifelse(total_time_mvig=="missing",
+                               ifelse(lead(t_hat)-t_hat>=1,1,t_hat%%1),total_time_mvig)
+         
+         ))%>%
+  group_by(ID)%>%
+  mutate(total_time_mvig=ifelse(is.na(total_time_mvig),t_hat%%1,total_time_mvig))%>% #Some subjects only have 1 occurrence of light activity recorded so we need to account for their record
+  summarise(total_time_vig=sum(total_time_mvig))%>%
+  as.data.frame()
 
-save(OAI_KL_JSW_sample_edit,file='OAI_KL_JSW_sample_edit.Rdata')##Saving the above dataframe I created
+##Let's count how many people have more than or equal to 75/7 min a day
+vig_count_6<-vig_ac%>%
+  dplyr::filter(total_time_vig>=75/7)
+dim(vig_count_6) #Tells us how many people meet these recommendations which is 4.
 
-###Cluster Demographics at baseline:
-cluster_demo<-OAI_KL_JSW_sample_edit%>%
-  dplyr::filter(VISIT=='V06')
+#Let's see if people are meeting both moderate and vig activity guidelines:
+int<-inner_join(vig_count_6,mod_count_6,by="ID") #We find 1 person who meets these recommendations (ID 9589486 with vig time being  21 and mod time being 24.51288)
 
-##Sex
-sex<-cluster_demo%>%
-  count(SEX, clusters) %>%
-  group_by(clusters) %>%
-  # calculate percent within cluster
-  mutate(n = (n / sum(n)))
+```
+Repeat what I did above using the v8 information
+```{r CDC Guidelines v8}
+load("min8_medday_reg.Rdata")
+#How many long are people doing moderate activity? 
 
-sex_p<-ggplot(sex, aes(x=SEX, y=n, fill=(as.factor(clusters)))) +
-  geom_bar(stat="identity", position=position_dodge())+
-  scale_fill_brewer(palette="Paired")+ggtitle('Percent of males vs. females in each cluster')+ 
-  xlab("Sex")+
-  ylab("Percent of Subjects")+ guides(fill=guide_legend(title="Cluster"))+
-  theme_minimal()+theme(text = element_text(size = 20))+scale_y_continuous(labels = scales::percent_format())
+mod_ac<-min8_medday_reg$Y%>% #The registered output for visit 6
+  rename(ID=id)%>% 
+  transform(t_hat=t_hat*1440)%>%
+  dplyr::filter(between(value,2020,5998))%>%
+  group_by(ID)%>%
+  mutate(t_hatdiff=t_hat-lag(t_hat))%>%#Find the difference between the minute recorded before which had mod activity. This was done to see if the times are more than a minute apart or not. 
+  mutate(total_time_mod=ifelse(t_hatdiff>=1,1,t_hat%%1))%>% #Record if more than a min apart or not
+  #Deal with the first NA values for each subject
+  mutate(total_time_mod=ifelse(is.na(total_time_mod),"missing",total_time_mod))%>%
+  mutate(total_time_mod=as.numeric(ifelse(total_time_mod=="missing",
+                               ifelse(lead(t_hat)-t_hat>=1,1,t_hat%%1),total_time_mod)
+         ))%>%
+  group_by(ID)%>%
+  mutate(total_time_mod=ifelse(is.na(total_time_mod),t_hat%%1,total_time_mod))%>% #Some subjects only have 1 occurrence of light activity recorded so we need to account for their record
+  summarise(total_time_mod=sum(total_time_mod))%>%
+  as.data.frame()
 
-#Race
-race<-cluster_demo%>%
-  count(RACE, clusters) %>%
-  group_by(clusters) %>%
-  # calculate percent within cluster
-  mutate(n = (n / sum(n)))
-
-race_p<-ggplot(race, aes(x=RACE, y=n, fill=(as.factor(clusters)))) +
-  geom_bar(stat="identity", position=position_dodge())+
-  scale_fill_brewer(palette="Paired")+ggtitle('Percent of white vs. non-white subjects in each cluster')+ 
-  xlab("Race")+
-  ylab("Percent of Subjects")+ guides(fill=guide_legend(title="Cluster"))+
-  theme_minimal()+theme(text = element_text(size = 20))+scale_y_continuous(labels = scales::percent_format())
-
-age_p<-ggplot(cluster_demo, aes(x=AGE))+
-  geom_histogram(color="blue", fill="lightblue")+
-  facet_grid(clusters ~ .)+ggtitle('Age across both clusters')+ 
-  xlab("Age")+
-  ylab("Number of Subjects")+
-  theme_minimal()+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 20))
-
-#BMI
-bmi_p<-ggplot(cluster_demo, aes(x=BMI))+
-  geom_histogram(color="blue", fill="lightblue")+
-  facet_grid(clusters ~ .)+ggtitle('BMI across both clusters')+ 
-  xlab("BMI")+
-  ylab("Number of Subjects")+
-  theme_minimal()+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 20))
-
-plot_grid(race_p,sex_p, age_p,bmi_p,ncol = 2, nrow = 2)  ##Plotted all together as a figure
-
-##Summary for age and BMI:
-ddply(cluster_demo, "clusters", summarise, grp.mean=mean(AGE)) #Age
-
-#BMI in each cluster
-bmi_c1<-cluster_demo%>%
-  dplyr::filter(clusters==1)
-bmi_c2<-cluster_demo%>%
-  dplyr::filter(clusters==2)
-mean(bmi_c1)
-mean(bmi_c2)
+##Let's count how many people have more than or equal to 150/7 min a day
+mod_count<-mod_ac%>%
+  dplyr::filter(total_time_mod>=150/7)
+dim(mod_count) #Tells us how many people meet these recommendations which is 16.
 
 
-##Cluster Specific registration plots:
-reg_output<-medday_reg$Y
+##Total time in vig activity:
+vig_ac<-min8_medday_reg$Y%>% #The registered output for visit 6
+  rename(ID=id)%>% 
+  transform(t_hat=t_hat*1440)%>%
+  dplyr::filter(value>=5999)%>%
+  group_by(ID)%>%
+  mutate(t_hatdiff=t_hat-lag(t_hat))%>%#Find the difference between the minute recorded before which had mvig activity. This was done to see if the times are more than a minute apart or not. 
+  mutate(total_time_mvig=ifelse(t_hatdiff>=1,1,t_hat%%1))%>% #Record if more than a min apart or not
+  #Deal with the first NA values for each subject
+  mutate(total_time_mvig=ifelse(is.na(total_time_mvig),"missing",total_time_mvig))%>%
+  mutate(total_time_mvig=as.numeric(ifelse(total_time_mvig=="missing",
+                               ifelse(lead(t_hat)-t_hat>=1,1,t_hat%%1),total_time_mvig)
+         
+         ))%>%
+  group_by(ID)%>%
+  mutate(total_time_mvig=ifelse(is.na(total_time_mvig),t_hat%%1,total_time_mvig))%>% #Some subjects only have 1 occurrence of light activity recorded so we need to account for their record
+  summarise(total_time_vig=sum(total_time_mvig))%>%
+  as.data.frame()
 
-names(cluster_demo)[1] ="id" #Rename to lower case to allow inner_join function
+vig_count<-vig_ac%>%
+  dplyr::filter(total_time_vig>=75/7)
+dim(vig_count) #2 people
 
-combo_table<-inner_join(reg_output,cluster_demo,by="id") #registration and demo details:
+int<-inner_join(vig_count,mod_count,by="ID") #Nobody here meets both
 
+##Let's see how many people consistently meet guidelines:
+combo_mod<-inner_join(mod_count_6,mod_count,by="ID")
+combo_vig<-inner_join(vig_count_6,vig_count,by="ID")
 
-pre_reg<-ggplot(combo_table,aes(x=(tstar),y=value,group=id))+geom_line(colour="purple")+scale_colour_brewer()+labs(title = "Median activity count data for all participants on registered time at 48 month visit across clusters",
-                                                                                                                   caption = "Data source: Osteoarthritis Initiative (OAI)",
-                                                                                                                   x = "Unregistered time (Minute)", y = "Median Activity Count",
-                                                                                                                   tag = "Plot 1") + scale_x_continuous(breaks=seq(0, 1440, 60))
-warp_pre<-pre_reg+facet_grid(rows = vars(clusters))+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 15))
+```
+Generating predicted curves
+```{r Median predicted activity visit6 and 8}
+library(gghighlight)
+library(grid)
+load("min6_medday_reg.Rdata")
+load("min8_medday_reg.Rdata")
+#Predicted values--> Given by the registration function itself: 
+preds<-data.frame(pred_value=(min6_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min6_medday_reg$Y,preds)
 
+#Replace ids with numbers
+id_rep<-data.frame(id=visits_ID$ID,p_id=c(1:1343))
+combo_rep<-inner_join(combo,id_rep,by="id")
 
-#Registration Plot:
-post_reg_gaus_v6<-ggplot(combo_table,aes(x=(t_hat*1440),y=value,group=id))+geom_line(colour="purple") +labs(title = "Median activity count data for all participants on registered time at 48 month visit across clusters",
-                                                                                                            caption = "Data source: Osteoarthritis Initiative (OAI)",
-                                                                                                            x = "Registered time (Minute)", y = "Median Activity Count",
-                                                                                                            tag = "Plot 2") +scale_x_continuous(breaks=seq(0, 1440, 60))+scale_x_continuous(breaks=seq(0, 1440, 60))
-warp_post<-post_reg_gaus_v6+facet_grid(rows = vars(clusters))+theme(strip.background = element_rect(fill = "black",),strip.text = element_text(color = "white"))+theme(text = element_text(size = 15))
+##Graph of the predicted activity curves at visit 6
+post_reg_gaus_v6<-ggplot(combo_rep,aes(x=(t_hat*1440),y=pred_value,col=p_id,group=p_id))+geom_line() +labs(title="48-Month",x = "Registered time (Minute)", y = "Predicted Activity Count",
+              tag = "A") +labs(color = "Participant ID")+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_color_gradient(low="blue", high="grey")+theme(text = element_text(size = 30))+scale_color_viridis_c()
 
-plot_grid(warp_pre,warp_post,ncol = 1, nrow = 2)
+##Graph of the predicted activity curves at visit 8
+preds<-data.frame(pred_value=(min8_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min8_medday_reg$Y,preds)
 
+post_reg_gaus_v8<-ggplot(combo_rep,aes(x=(t_hat*1440),y=pred_value,col=p_id,group=p_id))+geom_line() +labs(title="72-Month",x = "Registered time (Minute)", y = "Predicted Activity Count",tag = "B") +labs(color = "Participant ID")+scale_x_continuous(breaks=seq(0, 1440, 120))+scale_color_gradient(low="blue", high="grey")+theme(text = element_text(size = 35))+scale_color_viridis_c()
 
-###Summaries for each cluster:
+##Plot side-by-side
+plot_grid(post_reg_gaus_v6,post_reg_gaus_v8,ncol = 1, nrow = 2)
 
-#Cluster 1
-reg_output_c1<-reg_output%>%
-  dplyr::filter(id%in%gr1) #gr1 is the IDs in cluster 1 
-library(data.table)
-tab<-setDT(reg_output_c1)[, mean(value), by = id] #mean activity for each person 
-summary(tab$V1)
+```
 
-#Cluster 2
-reg_output_c2<-reg_output%>%
-  dplyr::filter(id%in%gr2) #gr2 is the IDs in cluster 2
-tab2<-setDT(reg_output_c2)[, mean(value), by = id]  #mean activity for each person
-summary(tab2$V1)
+```{r ARUC variety of methods}
+library(bayestestR)
+load("min6_medday_reg.Rdata")
+load("min8_medday_reg.Rdata")
+setwd(("/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac"))
 
+#Visit 6:
+preds<-data.frame(pred_value=(min6_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min6_medday_reg$Y,preds)
 
-##How many are meeting CDC guidelines in each cluster:
-##75 minutes of vigorous/ week--> crude 
-vig_activity<-combo_table%>% #from above
+combo_test_v6<-combo%>%
   group_by(id)%>%
-  transform(MV_cutpoint=ifelse(value>=5999,1,0))%>%  #Vig PA cutpoint 
+  rename(ID=id)%>%
+  mutate(area_trap=area_under_curve(t_hat, pred_value, method = "trapezoid"))%>%
+  mutate(area_step=area_under_curve(t_hat, pred_value, method = "step"))%>%
+  mutate(area_spline=area_under_curve(t_hat, pred_value, method = "spline"))%>%
+  summarise_all(last)%>% #Get back the area under the curve for each subject -last val
+  as.data.frame()%>%
+  rename(AURC=area_trap)%>%
+  select(ID,AURC)
+
+save(combo_test_v6,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/combo_test_v6.Rdata")
+
+
+#Visit 8:
+preds<-data.frame(pred_value=(min8_medday_reg$fpca_obj$Yhat$value))
+combo<-cbind(min8_medday_reg$Y,preds)
+
+combo_test_v8<-combo%>%
   group_by(id)%>%
-  summarise(MV_cutpoint=sum(MV_cutpoint))%>%
-  transform(meet_cutpoint=ifelse(MV_cutpoint<75/7,1,2))%>%  #1 if they do not meet the guidelines and 2 if they do.
-  transform(clusters=ifelse(id %in% clus1$id,1,2))
+  rename(ID=id)%>%
+  mutate(area_trap=area_under_curve(t_hat, pred_value, method = "trapezoid"))%>%
+  mutate(area_step=area_under_curve(t_hat, pred_value, method = "step"))%>%
+  mutate(area_spline=area_under_curve(t_hat, pred_value, method = "spline"))%>%
+  summarise_all(last)%>% #Get back the area under the curve for each subject -last val
+  as.data.frame()%>%
+  rename(AURC=area_trap)%>%
+  select(ID,AURC)
 
-chek_vig<-vig_activity%>%
-  group_by(clusters)%>%
-  count(meet_cutpoint)
-chek_vig
+save(combo_test_v8,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/combo_test_v8.Rdata")
 
-##Moderate activity:
-mod_activity<-combo_table%>% 
+```
+
+
+PRIMARY Analysis (OA outcomes)
+
+Looking at demographics
+```{r AURC across sex}
+load("combo_test_v6.Rdata") #AURC data
+load("combo_test_v8.Rdata") #AURC data
+
+demo_v6<-OAI_KL_JSW_data%>%
+  select(ID,SEX,BMI,RACE,AGE,V00COHORT,VISIT)%>%
+  dplyr::filter(VISIT=="V06")%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+demo_v6<-inner_join(demo_v6,combo_test_v6,by="ID")
+
+demo_v8<-OAI_KL_JSW_data%>%
+  select(ID,SEX,BMI,RACE,AGE,V00COHORT,VISIT)%>%
+  dplyr::filter(VISIT=="V08")%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+demo_v8<-inner_join(demo_v8,combo_test_v8,by="ID")
+
+combined_data<-rbind(demo_v6,demo_v8) #PUT AURC data together
+
+# Filter data for men and run Wilcoxon Signed-Rank Test
+men_data<-combined_data%>%
+  dplyr::filter(SEX=="M")
+wilcox_test_men <- wilcox.test(AURC ~ VISIT, data = men_data, paired = TRUE)
+print(wilcox_test_men)
+
+# Filter data for women and run Wilcoxon Signed-Rank Test
+women_data<-combined_data%>%
+  dplyr::filter(SEX=="F")
+wilcox_test_women <- wilcox.test(AURC ~ VISIT, data = women_data, paired = TRUE)
+print(wilcox_test_women)
+
+#Perform Mann-Whitney U test (unpaired) at v6
+v6men_data<-combined_data%>%
+  dplyr::filter(SEX=="M")%>%
+  dplyr::filter(VISIT=="V06")
+
+v6women_data<-combined_data%>%
+  dplyr::filter(SEX=="F")%>%
+  dplyr::filter(VISIT=="V06")
+
+result <- wilcox.test(v6men_data$AURC, v6women_data$AURC)
+result <- wilcox.test(v8men_data$AURC, v8women_data$AURC)
+
+print(result)
+
+#Perform Mann-Whitney U test (unpaired) at v8
+v8men_data<-combined_data%>%
+  dplyr::filter(SEX=="M")%>%
+  dplyr::filter(VISIT=="V08")
+
+v8women_data<-combined_data%>%
+  dplyr::filter(SEX=="F")%>%
+  dplyr::filter(VISIT=="V08")
+
+result <- wilcox.test(v8men_data$AURC, v8women_data$AURC)
+```
+
+```{r AURC across race}
+#Using demo data from the previous chunk
+
+v6white_dem<-demo_v6%>%
+  dplyr::filter(RACE=="White")
+
+v8white_dem<-demo_v8%>%
+  dplyr::filter(RACE=="White")
+
+v6nw_dem<-demo_v6%>%
+  dplyr::filter(RACE!="White")
+
+v8nw_dem<-demo_v8%>%
+  dplyr::filter(RACE!="White")
+
+#Perform Mann-Whitney U test (unpaired) at v6
+result <- wilcox.test(v6white_dem$AURC, v6nw_dem$AURC)
+#Perform Mann-Whitney U test (unpaired) at v8
+result <- wilcox.test(v8white_dem$AURC, v8nw_dem$AURC)
+
+#Combine data first
+dem<-rbind(demo_v6,demo_v8)
+
+
+# Filter data for white and run Wilcoxon Signed-Rank Test
+white_dem<-dem%>%
+  dplyr::filter(RACE=="White")
+
+wilcox_test_white <- wilcox.test(AURC ~ VISIT, data = white_dem, paired = TRUE)
+print(wilcox_test_white)
+
+
+# Filter data for nonwhite and run Wilcoxon Signed-Rank Test
+nw_dem<-dem%>%
+  dplyr::filter(RACE!="White")
+
+wilcox_test_nw <- wilcox.test(AURC ~ VISIT, data = nw_dem, paired = TRUE)
+print(wilcox_test_nw)
+
+```
+
+```{r AURC across age}
+#IDS of those above or below 64 at 48-month
+above_dem<-demo_v6%>%
+  dplyr::filter(AGE>=64)%>%
+  select(ID)
+
+below_dem<-demo_v6%>%
+  dplyr::filter(AGE<64)%>%
+  select(ID)
+
+above_v6_dem<-demo_v6%>%
+  dplyr::filter(ID %in% above_dem$ID)
+below_v6_dem<-demo_v6%>%
+  dplyr::filter(ID %in% below_dem$ID)
+#Perform Mann-Whitney U test (unpaired) at v6
+result <- wilcox.test(above_v6_dem$AURC, below_v6_dem$AURC)
+
+#Visit8
+above_v8_dem<-demo_v8%>%
+  dplyr::filter(ID %in% above_dem$ID)
+below_v8_dem<-demo_v8%>%
+  dplyr::filter(ID %in% below_dem$ID)
+#Perform Mann-Whitney U test (unpaired) at v8
+result <- wilcox.test(above_v8_dem$AURC, below_v8_dem$AURC)
+
+#Paired test
+dem<-rbind(demo_v6,demo_v8)
+
+above_age_dem<-dem%>%
+  dplyr::filter(ID %in% above_dem$ID)
+wilcox_test_above <- wilcox.test(AURC ~ VISIT, data = above_age_dem, paired = TRUE)
+print(wilcox_test_above)
+
+below_age_dem<-dem%>%
+  dplyr::filter(ID %in% below_dem$ID)
+wilcox_test_below <- wilcox.test(AURC ~ VISIT, data = below_age_dem, paired = TRUE)
+print(wilcox_test_below)
+```
+
+```{r AURC subcohort}
+##Progression
+prog_demo_v6<-demo_v6%>%
+  dplyr::filter(V00COHORT=="1: Progression")
+prog_demo_v8<-demo_v8%>%
+  dplyr::filter(V00COHORT=="1: Progression")
+
+#Paired test
+prog_dem<-rbind(prog_demo_v6,prog_demo_v8)
+
+wilcox_test_prog <- wilcox.test(ARUC ~ VISIT, data = prog_dem, paired = TRUE)
+print(wilcox_test_prog)
+
+##Repeat for incidence
+inc_demo_v6<-demo_v6%>%
+  dplyr::filter(V00COHORT=="2: Incidence")
+inc_demo_v8<-demo_v8%>%
+  dplyr::filter(V00COHORT=="2: Incidence")
+
+#Paired test
+inc_dem<-rbind(inc_demo_v6,inc_demo_v8)
+
+wilcox_test_inc <- wilcox.test(AURC ~ VISIT, data = inc_dem, paired = TRUE)
+print(wilcox_test_inc)
+
+#Repeat for control:
+con_demo_v6<-demo_v6%>%
+  dplyr::filter(V00COHORT=="3: Non-exposed control group")
+con_demo_v8<-demo_v8%>%
+  dplyr::filter(V00COHORT=="3: Non-exposed control group")
+
+#Paired test
+con_dem<-rbind(con_demo_v6,con_demo_v8)
+
+wilcox_test_con <- wilcox.test(AURC ~ VISIT, data = con_dem, paired = TRUE)
+print(wilcox_test_con)
+
+combo_v6<-rbind(con_demo_v6,inc_demo_v6,prog_demo_v6)
+combo_v8<-rbind(con_demo_v8,inc_demo_v8,prog_demo_v8)
+# Run the Kruskal-Wallis test v6
+kruskal_result_v6 <- kruskal.test(AURC ~ V00COHORT, data = combo_v6)
+
+# Run the Kruskal-Wallis test v8
+kruskal_result_v8 <- kruskal.test(AURC ~ V00COHORT, data = combo_v8)
+print(kruskal_result_v8)
+```
+
+```{r AURC across BMI}
+load("demo_v6.Rdata")
+load("demo_v8.Rdata")
+
+demo_v6BMI<-demo_v6%>%
+  mutate(BMI = case_when(BMI < 18.5 ~ 'Underweight',
+  between(BMI, 18.5, 24.999) ~ 'Healthy weight',
+  between(BMI, 25, 30)~ 'Overweight',
+  BMI >30 ~ 'Obese'))
+
+#Underweight
+underweight_v6<-demo_v6BMI%>%
+  dplyr::filter(BMI=="Underweight")
+#Healthy weight
+hweight_v6<-demo_v6BMI%>%
+  dplyr::filter(BMI=="Healthy weight")
+#Overweight
+ovweight_v6<-demo_v6BMI%>%
+  dplyr::filter(BMI=="Overweight")
+#Obese
+obweight_v6<-demo_v6BMI%>%
+  dplyr::filter(BMI=="Obese")
+
+###V8
+underweight_v8<-demo_v8%>%
+  dplyr::filter(ID %in%underweight_v6$ID)%>%
+  mutate(BMI="Underweight")
+hweight_v8<-demo_v8%>%
+  dplyr::filter(ID %in%hweight_v6$ID)%>%
+  mutate(BMI="Healthy weight")
+ovweight_v8<-demo_v8%>%
+  dplyr::filter(ID %in%ovweight_v6$ID)%>%
+  mutate(BMI="Overweight")
+obweight_v8<-demo_v8%>%
+  dplyr::filter(ID %in%obweight_v6$ID)%>%
+  mutate(BMI="Obese")
+
+##Running Paired tests:
+#Underweight 
+underweight_dem<-rbind(underweight_v6,underweight_v8)
+
+wilcox_test_und <- wilcox.test(AURC ~ VISIT, data = underweight_dem, paired = TRUE)
+print(wilcox_test_und)
+
+#Healthy weight
+hweight_dem<-rbind(hweight_v6,hweight_v8)
+
+wilcox_test_hw <- wilcox.test(AURC ~ VISIT, data = hweight_dem, paired = TRUE)
+print(wilcox_test_hw)
+
+#Overweight
+ovweight_dem<-rbind(ovweight_v6,ovweight_v8)
+
+wilcox_test_ow <- wilcox.test(ARUC ~ VISIT, data = ovweight_dem, paired = TRUE)
+print(wilcox_test_ow)
+
+#Obese
+obweight_dem<-rbind(obweight_v6,obweight_v8)
+
+wilcox_test_ob <- wilcox.test(AURC ~ VISIT, data = obweight_dem, paired = TRUE)
+print(wilcox_test_ob)
+
+##Running unpaired tests:
+#V6
+v6_BMI<-rbind(underweight_v6,hweight_v6,ovweight_v6,obweight_v6)
+kruskal_result_v6 <- kruskal.test(AURC ~ BMI, data = v6_BMI)
+print(kruskal_result_v6)
+
+#V8
+v8_BMI<-rbind(underweight_v8,hweight_v8,ovweight_v8,obweight_v8)
+kruskal_result_v8 <- kruskal.test(AURC ~ BMI, data = v8_BMI)
+print(kruskal_result_v8)
+
+```
+
+WOMAC 
+```{r Linear mixed effects model}
+library(mmrm)
+library(tidyverse)
+setwd("/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac")
+load("combo_test_v6.Rdata")
+load("combo_test_v8.Rdata")
+load("visits_ID.Rdata")
+load("Outcomes.Rdata")#Called OAI_KL_JSW_data
+
+area_v8<-combo_test_v8%>%
+  transform(ID=as.factor(ID),
+            area=AURC)%>%
+  as.data.frame()
+
+area_v6<-combo_test_v6%>%
+  transform(ID=as.factor(ID),
+            area=AURC)%>%
+  as.data.frame()
+
+#Extract the valid information form each visit:
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE,WOMTSmax)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()
+
+#By doing it visit by visit I make sure I get those with valid info at both visits. 
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE,WOMTSmax)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()#Removes missing ppl with invalid values
+
+##The above are subjects in the sample population with valid BMI and WOMAC at each visit to find those who have BMI values at both visits:
+ids<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #1296 have BMI and WOMAC at both visits.
+
+outcomes_v6<-outcomes_v6%>% #Filter the ARUC data to include only those 1296
+  dplyr::filter(ID %in%ids)
+outcomes_v8<-outcomes_v8%>%
+  dplyr::filter(ID %in%ids) #Filter the ARUC data to include only those 1296
+
+#Combine the areas with the outcomes data above
+v6_comb<-inner_join(outcomes_v6,area_v6,by="ID")
+v8_comb<-inner_join(outcomes_v8,area_v8,by="ID")
+
+combo_visits<-rbind(v6_comb,v8_comb)
+combo_visits<-combo_visits%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+
+##Fit model:
+womac_results <- mmrm(formula = WOMTSmax ~ RACE+SEX+AGE+BMI+area+us(VISIT|ID),
+  data = combo_visits)
+#I saved these results:
+save(womac_results,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/womac_results.Rdata")
+```
+
+KL model
+```{r Mixed ordinal model}
+setwd("/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac")
+load("combo_test_v6.Rdata")
+load("combo_test_v8.Rdata")
+load("visits_ID.Rdata")
+load("Outcomes.Rdata")#Called OAI_KL_JSW_data
+
+KL_area_v6<-combo_test_v6%>%
+  transform(ID=as.factor(ID))%>%
+  rename(area=AURC)%>%
+  as.data.frame()
+
+KL_area_v8<-combo_test_v8%>%
+  transform(ID=as.factor(ID))%>%
+  rename(area=AURC)%>%
+  as.data.frame()
+
+#Extract the valid information form each visit:
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE,XRKL)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()
+
+#By doing it visit by visit I make sure I get those with valid info at both visits. 
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE,XRKL)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()#Removes missing ppl with invalid values
+
+##The above are subjects in the sample population with valid BMI and KL at each visit to find those who have BMI values at both visits:
+ids<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #886 have BMI and KL at both visits.
+
+outcomes_v6<-outcomes_v6%>% #Filter the ARUC data to include only those 886
+  dplyr::filter(ID %in%ids)
+outcomes_v8<-outcomes_v8%>%
+  dplyr::filter(ID %in%ids) #Filter the ARUC data to include only those 886
+
+#Combine the areas with the outcomes data above
+v6_comb<-inner_join(outcomes_v6,KL_area_v6,by="ID")
+v8_comb<-inner_join(outcomes_v8,KL_area_v8,by="ID")
+
+combo_visits_KL<-rbind(v6_comb,v8_comb)
+
+##Change the visit to be numerical:
+KL_data_pop<-combo_visits_KL%>%
+  mutate(VISIT = recode(VISIT, 'V06' = 48, 'V08' = 72))%>%
+  data.frame()
+
+cr_vals <- cr_setup(KL_data_pop$XRKL)
+cr_data <- KL_data_pop[cr_vals$subs, ]
+cr_data$XRKL_new <- cr_vals$y ## Note that this needs to be y, not XRKL
+cr_data$cohort <- cr_vals$cohort
+cr_data$VISIT <- factor(cr_data$VISIT)
+cr_data$cohort <- relevel(cr_data$cohort, ref = 4) #Reference level changed
+
+KL_results <- mixed_model(XRKL_new ~ cohort + RACE+SEX+AGE+BMI+area, random = ~ VISIT||ID, 
+                  data = cr_data, family = binomial(), control = list(max_coef_value=100, iter_EM = 0))
+
+#I saved these results:
+save(KL_results,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/KL_results.Rdata")
+
+```
+
+Supplementary Analysis: (Found in the supplementary analysis)
+```{r Sup: No control Analysis}
+#We are running no control registration 
+setwd(("/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac"))
+load("min6.Rdata")#Cleaned min data
+load("min8.Rdata")#Cleaned min data
+load("visits_ID.Rdata")
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData")
+
+no_control_ID<-OAI_KL_JSW_data%>%
+  dplyr::filter(V00COHORT=="3: Non-exposed control group")%>%
+  dplyr::filter(VISIT=="V00")%>%#we only need control IDs
+  select(ID)%>%
+  inner_join(visits_ID,by="ID")#sample pop in control group
+
+
+min6_medday<-min6%>%
+  group_by(ID,V06MinSequence)%>%
+  summarise(value=median(V06MINCnt))%>%
+  rename(id=ID)%>%
+  rename(index=V06MinSequence)%>%
+  dplyr::filter(!id %in%no_control_ID$ID)%>%
+  dplyr::filter(id%in% visits_ID$ID)%>%
+  na.omit()%>%
+  as.data.frame()##This must be done to run registration
+
+min8_medday<-min8%>%
+  group_by(ID,V08MinSequence)%>%
+  summarise(value=median(V08MINCnt))%>%
+  rename(id=ID)%>%
+  rename(index=V08MinSequence)%>%
+  dplyr::filter(!id %in% no_control_ID$ID)%>%
+  dplyr::filter(id%in% visits_ID$ID)%>%
+  na.omit(min8_medday)%>%
+  as.data.frame()##This must be done to run registration
+
+#This creates median days excluding those in the control group
+#Visit 6
+registr_gauss2_v6_noc<-register_fpca(Y =min6_medday, family = "gaussian",
+                    npc = 3, 
+                    Kt=8,
+                    Kh=4,
+                    gradient = FALSE,
+                    warping = "piecewise_linear2")
+#I saved these results:
+save(registr_gauss2_v6_noc,file="registr_gauss2_v6_noc.Rdata")
+save(registr_gauss2_v6_noc,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/registr_gauss_noc.Rdata")
+
+#Visit 8
+registr_gauss2_v8_noc<-register_fpca(Y =min8_medday, family = "gaussian",
+                    npc = 3, 
+                    Kt=8,
+                    Kh=4,
+                    gradient = FALSE,
+                    warping = "piecewise_linear2")
+#I saved these results:
+save(registr_gauss2_v8_noc,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/registr_gauss2_v8_noc.Rdata")
+
+##I will run the primary analysis
+##Find AURC
+library(bayestestR)
+
+#Visit 6:
+preds<-data.frame(pred_value=(registr_gauss2_v6_noc$fpca_obj$Yhat$value))
+combo<-cbind(registr_gauss2_v6_noc$Y,preds)
+
+combo_test_v6_noc<-combo%>%
   group_by(id)%>%
-  transform(MV_cutpoint=ifelse(value %in% seq(2020,5998),1,0))%>%  #Mod PA cutpoint  
+  rename(ID=id)%>%
+  mutate(area_trap=area_under_curve(t_hat, pred_value, method = "trapezoid"))%>%
+  summarise_all(last)%>% #Get back the area under the curve for each subject -last val
+  as.data.frame()
+
+#Repeat for visit 8
+preds<-data.frame(pred_value=(registr_gauss2_v8_noc$fpca_obj$Yhat$value))
+combo<-cbind(registr_gauss2_v8_noc$Y,preds)
+
+combo_test_v8_noc<-combo%>%
   group_by(id)%>%
-  summarise(MV_cutpoint=sum(MV_cutpoint))%>%
-  transform(meet_cutpoint=ifelse(MV_cutpoint<150/7,1,2))%>%  #1 if they do not meet the guidelines and 2 if they do.
-  transform(clusters=ifelse(id %in% clus1$id,1,2))
+  rename(ID=id)%>%
+  mutate(area_trap=area_under_curve(t_hat, pred_value, method = "trapezoid"))%>%
+  summarise_all(last)%>% #Get back the area under the curve for each subject -last val
+  as.data.frame()
 
-mod_counts<-mod_activity%>%
-  group_by(clusters)%>%
-  count(meet_cutpoint)
+save(combo_test_v8_noc,file="/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac/combo_test_v8_noc.Rdata")
 
-mod_counts
+library(mmrm)
+library(tidyverse)
+setwd("/gpfs/fs1/home/o/oespinga/reshani0/reshani_prac")
+load("combo_test_v6.Rdata")
+load("combo_test_v8.Rdata")
+load("visits_ID.Rdata")
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData")
 
-###END of primary Analysis
+area_v8<-combo_test_v8_noc%>%
+  transform(ID=as.factor(ID))%>%
+  as.data.frame()
+
+area_v6<-combo_test_v6_noc%>%
+  transform(ID=as.factor(ID))%>%
+  as.data.frame()
+
+#Extract the valid information form each visit:
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE,WOMTSmax)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()
+
+#By doing it visit by visit I make sure I get those with valid info at both visits. 
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE,WOMTSmax)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()#Removes missing ppl with invalid values
+
+##The above are subjects in the sample population with valid BMI and WOMAC at each visit to find those who have BMI values at both visits:
+ids<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #1296 have BMI and WOMAC at both visits.
+
+outcomes_v6<-outcomes_v6%>% #Filter the ARUC data to include only those 1296
+  dplyr::filter(ID %in%ids)
+outcomes_v8<-outcomes_v8%>%
+  dplyr::filter(ID %in%ids) #Filter the ARUC data to include only those 1296
+
+#Combine the areas with the outcomes data above
+v6_comb<-inner_join(outcomes_v6,area_v6,by="ID")
+v8_comb<-inner_join(outcomes_v8,area_v8,by="ID")
+
+combo_visits<-rbind(v6_comb,v8_comb)
+combo_visits<-combo_visits%>%
+  dplyr::filter(ID %in% visits_ID$ID)
+
+##Fit model:
+womac_results <- mmrm(formula = WOMTSmax ~ RACE+SEX+AGE+BMI+area_trap+us(VISIT|ID), data = combo_visits) #Excluding control group
+
+###KL 
+KL_area_v6<-combo_test_v6_noc%>%
+  transform(ID=as.factor(ID))%>%
+  as.data.frame()
+
+KL_area_v8<-combo_test_v8_noc%>%
+  transform(ID=as.factor(ID))%>%
+  as.data.frame()
+
+#Extract the valid information form each visit:
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE,XRKL)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()
+
+#By doing it visit by visit I make sure I get those with valid info at both visits. 
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE,XRKL)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  transform(ID=as.factor(ID))%>%
+  na.omit()#Removes missing ppl with invalid values
+
+##The above are subjects in the sample population with valid BMI and KL at each visit to find those who have BMI values at both visits:
+ids<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #886 have BMI and KL at both visits.
+
+outcomes_v6<-outcomes_v6%>% #Filter the ARUC data to include only those 886
+  dplyr::filter(ID %in%ids)
+outcomes_v8<-outcomes_v8%>%
+  dplyr::filter(ID %in%ids) #Filter the ARUC data to include only those 886
+
+#Combine the areas with the outcomes data above
+v6_comb<-inner_join(outcomes_v6,KL_area_v6,by="ID")
+v8_comb<-inner_join(outcomes_v8,KL_area_v8,by="ID")
+
+combo_visits_KL<-rbind(v6_comb,v8_comb)
+
+##Change the visit to be numerical:
+KL_data_pop<-combo_visits_KL%>%
+  mutate(VISIT = recode(VISIT, 'V06' = 48, 'V08' = 72))%>%
+  data.frame()
+
+cr_vals <- cr_setup(KL_data_pop$XRKL)
+cr_data <- KL_data_pop[cr_vals$subs, ]
+cr_data$XRKL_new <- cr_vals$y ## Note that this needs to be y, not XRKL
+cr_data$cohort <- cr_vals$cohort
+cr_data$VISIT <- factor(cr_data$VISIT)
+cr_data$cohort <- relevel(cr_data$cohort, ref = 4)
+
+KL_results <- mixed_model(XRKL_new ~ cohort + RACE+SEX+AGE+BMI+area_trap, random = ~ VISIT|ID, 
+                  data = cr_data, family = binomial(), control = list(max_coef_value=100, iter_EM = 0))
+```
+
+```{r Sup: WOMAC pain and stiffness}
+womac_pain_6<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/AllClinical06.txt", sep="|", header=T)
+womac_pain_8<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/AllClinical08.txt", sep="|", header=T)
+load("visits_ID.Rdata")
+
+womac_6<-womac_pain_6%>%
+  select(ID,V06WOMKPL,V06WOMKPR,V06WOMSTFL,V06WOMSTFR)%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>%
+  mutate(max_WOMKP_6=pmax(V06WOMKPL,V06WOMKPR,na.rm=TRUE), #Took max across the two visits
+         max_WOMSTF_6=pmax(V06WOMSTFL,V06WOMSTFR,na.rm=TRUE))%>%
+  as.data.frame()
+
+womac_pain_8<-womac_pain_8%>%
+  select(ID,V08WOMKPL,V08WOMKPR,V08WOMSTFL,V08WOMSTFR)%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>%
+  mutate(max_WOMKP_8=pmax(V08WOMKPL,V08WOMKPR,na.rm=TRUE), #Took max across the two visits
+         max_WOMSTF_8=pmax(V08WOMSTFL,V08WOMSTFR,na.rm=TRUE))%>%
+  as.data.frame()
+
+## NA cases there exists an NA for V06WOMSTFL, and 2 for V08WOMSTFL dealt by using the other value provided.
+#Now we combine the above:
+womac_visits<-inner_join(womac_6,womac_pain_8,by="ID")%>%
+  select(ID,max_WOMKP_6,max_WOMSTF_6,max_WOMKP_8,max_WOMSTF_8)%>%
+  as.data.frame() #No missing values
+
+##Run the same model we ran for WOMAC score in primary:
+load("combo_test_v6.Rdata")#File with AURC for each subject on visit 8 on median day
+load("combo_test_v8.Rdata")#File with AURC for each subject on visit 6 on median day
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData")#This is the outcome data
+
+##Working with outcomes data 
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+#By doing it visit by visit I make sure I get those with valid BMI at both visits. 
+
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+
+##The above are subjects in the sample population with valid BMI at each visit to find those who have BMI values at both visits:
+ids_BMI<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #1309 have BMI at both visits.
+
+outcomes_v6<-outcomes_v6%>% #Filter the ARUC data to include only those 1309
+  dplyr::filter(ID %in%ids_BMI)
+outcomes_v8<-outcomes_v8%>%
+  dplyr::filter(ID %in%ids_BMI) #Filter the AURC data to include only those 1309
+
+##Creating data frame for model
+#V6
+womac_v6<-womac_visits%>%
+  select(ID,max_WOMKP_6,max_WOMSTF_6)%>%
+  rename(WOMKP=max_WOMKP_6,
+         WOMSTF=max_WOMSTF_6)%>%
+  inner_join(combo_test_v6, by="ID")%>%
+  as.data.frame()%>%
+  inner_join(outcomes_v6,by="ID")%>%
+  transform(ID=as.factor(ID))
+
+womac_v8<-womac_visits%>%
+  select(ID,max_WOMKP_8,max_WOMSTF_8)%>%
+  rename(WOMKP=max_WOMKP_8,
+         WOMSTF=max_WOMSTF_8)%>%
+  inner_join(combo_test_v8, by="ID")%>%
+  as.data.frame()%>%
+  inner_join(outcomes_v8,by="ID")%>%
+  transform(ID=as.factor(ID))#Making ID as factor part of the mmrm model fit.
+
+womac_combo<-rbind(womac_v6,womac_v8)
+
+#Using pain
+pain_fit <- mmrm(formula = WOMKP ~ RACE+SEX+AGE+BMI+AURC+us(VISIT|ID),
+  data = womac_combo)
+summary(pain_fit)
+
+#Using Stiffness
+stiff_fit <- mmrm(formula = WOMSTF ~ RACE+SEX+AGE+BMI+AURC+us(VISIT|ID),
+  data = womac_combo)
+summary(stiff_fit)
+
+```
 
 
+
+```{r Sup: JSW}
+qjsw_6<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/kxr_qjsw_duryea06.txt", sep="|", header=T)
+qjsw_8<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/kxr_qjsw_duryea08.txt", sep="|", header=T)
+load("visits_ID.Rdata")
+
+qjsw_6<-qjsw_6%>%
+  select(ID,side,V06MCMJSW,V06BARCDJD)%>%
+  group_by(ID)%>%
+  dplyr::filter(ID %in%visits_ID$ID)%>%
+  na.omit()%>% #Remove NA values measured for JSW 
+  group_by(ID,side)%>%
+  dplyr::summarise(V06MCMJSW=max(V06MCMJSW))%>% #Finds the max measured for each side with repeats
+  as.data.frame()%>%
+  group_by(ID)%>%
+  dplyr::summarise(jsw_comp=sum(V06MCMJSW))
+
+qjsw_8<-qjsw_8%>%
+  select(ID,side,V08MCMJSW,V08BARCDJD)%>%
+  group_by(ID)%>%
+  dplyr::filter(ID %in%visits_ID$ID)%>%
+  na.omit()%>% #Remove NA values measured for JSW 
+  group_by(ID,side)%>%
+  dplyr::summarise(V08MCMJSW=max(V08MCMJSW))%>% #Finds the max measured for each side with repeats
+  as.data.frame()%>% #Leaving us with 823 subjects 
+  group_by(ID)%>%
+  dplyr::summarise(jsw_comp=sum(V08MCMJSW))
+
+
+##Run the same model we ran for WOMAC score in primary:
+load("combo_test_v6.Rdata")#File with AURC for each subject on visit 8 on median day
+load("combo_test_v8.Rdata")#File with AURC for each subject on visit 6 on median day
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData")#This is 
+
+##Working with outcomes data 
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+#By doing it visit by visit I make sure I get those with valid BMI at both visits. 
+
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+
+##The above are subjects in the sample population with valid BMI at each visit to find those who have BMI values at both visits:
+ids_BMI<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #1309 have BMI at both visits.
+
+outcomes_v6<-outcomes_v6%>% #Filter the ARUC data to include only those 1309
+  dplyr::filter(ID %in%ids_BMI)
+outcomes_v8<-outcomes_v8%>%
+  dplyr::filter(ID %in%ids_BMI) #Filter the AURC data to include only those 1309
+
+
+##Creating data frame for model
+#V6
+jsw_v6<-qjsw_6%>%
+  inner_join(combo_test_v6, by="ID")%>%
+  as.data.frame()%>%
+  inner_join(outcomes_v6,by="ID")%>%
+  transform(ID=as.factor(ID))
+
+jsw_v8<-qjsw_8%>%
+  inner_join(combo_test_v8, by="ID")%>%
+  as.data.frame()%>%
+  inner_join(outcomes_v8,by="ID")%>%
+  transform(ID=as.factor(ID))%>%
+  dplyr::filter(ID %in% jsw_v6$ID) #We only want those present at both visits
+
+#We only want those present at both visits
+jsw_v6<-jsw_v6%>%
+  dplyr::filter(ID %in% jsw_v8$ID)
+
+jsw_combo<-rbind(jsw_v6,jsw_v8)
+
+#Using JSW
+jsw_fit <- mmrm(formula = jsw_comp ~ RACE+SEX+AGE+BMI+AURC+us(VISIT|ID),
+  data = jsw_combo)
+summary(jsw_fit)
+
+```
+
+```{r Sup: Chondrocalcinosis}
+osteo_6<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/kxr_sq_bu06.txt", sep="|", header=T)
+osteo_8<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/kxr_sq_bu08.txt", sep="|", header=T)
+load("visits_ID.Rdata")#IDs of those in the sample pop 
+
+#We will make the outcome binary. This means if at least one has a score not 0 across the medial or lateral sides they get scored 1 if 0 across all then 0.
+osteoph_6_chond<-osteo_6%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>% #This left us with 1309 subjects I had 1309 unique barcodes
+  select(ID,SIDE,V06XRCHM,V06XRCHL,V06BARCDBU)%>%
+  na.omit()%>% #Remove NA values measured for medial 
+  group_by(ID,SIDE)%>%#This leaves us 823 subjects
+  dplyr::summarise(V06XRCHM=max(V06XRCHM),
+                   V06XRCHL=max(V06XRCHL))%>%
+  as.data.frame()%>% #Leaving us with 823 subjects 
+  group_by(ID)%>%
+  dplyr::summarise(medial_comp=sum(V06XRCHM),
+                   lateral_comp=sum(V06XRCHL))%>%
+  mutate(medial_comp=ifelse(medial_comp>=1,1,0),
+         lateral_comp=ifelse(lateral_comp>=1,1,0))%>%
+  mutate(chond=ifelse(medial_comp==0&lateral_comp==0,0,1))%>%#Making the outcome into a binary where those with 1 on at least one side is graded as a 1 and all else is a 0.
+  mutate(VISIT=as.factor(c("V06"))) #Leaves us with 823 ppl
+
+osteoph_8_chond<-osteo_8%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>% #This left us with 1309 subjects I had 1309 unique barcodes
+  select(ID,SIDE,V08XRCHM,V08XRCHL,V08BARCDBU)%>%
+  na.omit()%>% #Remove NA values measured for medial 
+  group_by(ID,SIDE)%>%#This leaves us 823 subjects
+  dplyr::summarise(V08XRCHM=max(V08XRCHM),
+                   V08XRCHL=max(V08XRCHL))%>%
+  as.data.frame()%>% #Leaving us with 823 subjects 
+  group_by(ID)%>%
+  dplyr::summarise(medial_comp=sum(V08XRCHM),
+                   lateral_comp=sum(V08XRCHL))%>%
+  mutate(medial_comp=ifelse(medial_comp>=1,1,0),
+         lateral_comp=ifelse(lateral_comp>=1,1,0))%>%
+  mutate(chond=ifelse(medial_comp==0&lateral_comp==0,0,1))%>%#Making the outcome into a binary where those with 1 on at least one side is graded as a 1 and all else is a 0.
+  mutate(VISIT=as.factor(c("V08")))
+
+#I want to check if I have the same IDs at both visits
+identical(osteoph_8_chond$ID,osteoph_6_chond$ID) #I get back false
+
+#Get the IDs of people with measurements at both visits 
+#Extract list of IDs from each dataset and find shared ID list. 
+chond_6_ids<-osteoph_6_chond%>%
+  select(ID)
+
+chond_8_ids<-osteoph_8_chond%>%
+  select(ID)
+
+ids_chond<-inner_join(chond_6_ids,chond_8_ids,by="ID") #Leaving me with 115
+
+##Combine the outcomes for each visit
+chond_outcome<-rbind(osteoph_8_chond,osteoph_6_chond)%>%
+  dplyr::filter(ID %in% ids_chond$ID)%>%
+  group_by(ID)%>%
+  as.data.frame()##Final with medial outcomes
+
+load("combo_test_v6.Rdata")#File with AURC for each subject on visit 8 on median day
+load("combo_test_v8.Rdata")#File with AURC for each subject on visit 6 on median day
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData")#This is the outcome data
+##Working with outcomes data 
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+#By doing it visit by visit I make sure I get those with valid BMI at both visits. 
+
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+
+##The above are subjects in the sample population with valid BMI at each visit to find those who have BMI values at both visits:
+ids_BMI<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #1309 have BMI at both visits.
+
+outcomes6<-combo_test_v6%>% #Filter the AURC data to include only those 1309
+  dplyr::filter(ID %in%ids_BMI)%>%
+  inner_join(outcomes_v6,by="ID")
+outcomes8<-combo_test_v8%>%
+  dplyr::filter(ID %in%ids_BMI)%>%
+  inner_join(outcomes_v8,by="ID")
+
+##Combine it all:
+coutcomes6<-chond_outcome%>%
+  inner_join(outcomes6,by=c("ID","VISIT"))
+coutcome_8<-chond_outcome%>%
+  inner_join(outcomes8,by=c("ID","VISIT"))
+
+coutcome<-rbind(coutcomes6,coutcome_8)#Final combined
+
+mixed_model <- mixed_model(
+  fixed = chond ~ AURC + AGE + SEX + BMI + RACE,
+  random = ~ VISIT||ID,
+  family = binomial,
+  data = coutcome,control = list(max_coef_value=100, iter_EM = 0))
+
+```
+
+```{r Sup: Osteophyte}
+osteo_6<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/kxr_sq_bu06.txt", sep="|", header=T)
+osteo_8<-read.table("/project/o/oespinga/oespinga/OAI/ClinicalData/CompleteData_ASCII/kxr_sq_bu08.txt", sep="|", header=T)
+load("visits_ID.Rdata")#IDs of those in the sample pop 
+
+osteoph_6<-osteo_6%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>% #This left us with 1309 subjects I had 1309 unique barcodes
+  select(ID,SIDE,V06XROSFL,V06XROSFM,V06XROSTL,V06XROSTM,V06BARCDBU)%>% #I look at only the femur variable
+  na.omit()%>% #Remove NA values measured for femur 
+  group_by(ID,SIDE)%>%#This leaves us 823 subjects
+  dplyr::summarise(V06XROSFL=max(V06XROSFL),
+                   V06XROSFM=max(V06XROSFM),
+                   V06XROSTL=max(V06XROSTL),
+                   V06XROSTM=max(V06XROSTM))%>% #Finds the max measured for each side with repeats
+  as.data.frame()%>% #Leaving us with 823 subjects 
+  group_by(ID)%>%
+  dplyr::summarise(fl=sum(V06XROSFL),
+                   fm=sum(V06XROSFM),
+                   tl=sum(V06XROSTL),
+                    tm=sum(V06XROSTM))%>%
+  mutate(osteo=ifelse(fl==0& fm==0&tl==0&tm==0,0,1))%>%
+  mutate(VISIT=as.factor(c("V06")))#Making the outcome into a binary where those with 1 on at least one side is graded as a 1 and all else is a 0.
+
+osteoph_8<-osteo_8%>%
+  dplyr::filter(ID %in% visits_ID$ID)%>% #This left us with 1309 subjects I had 1309 unique barcodes
+  select(ID,SIDE,V08XROSFL,V08XROSFM,V08XROSTL,V08XROSTM,V08BARCDBU)%>% #I look at only the femur variable
+  na.omit()%>% #Remove NA values measured for femur 
+  group_by(ID,SIDE)%>%#This leaves us 823 subjects
+  dplyr::summarise(V08XROSFL=max(V08XROSFL),
+                   V08XROSFM=max(V08XROSFM),
+                   V08XROSTL=max(V08XROSTL),
+                   V08XROSTM=max(V08XROSTM))%>% #Finds the max measured for each side with repeats
+  as.data.frame()%>% #Leaving us with 823 subjects 
+  group_by(ID)%>%
+  dplyr::summarise(fl=sum(V08XROSFL),
+                   fm=sum(V08XROSFM),
+                   tl=sum(V08XROSTL),
+                    tm=sum(V08XROSTM))%>%
+  mutate(osteo=ifelse(fl==0& fm==0&tl==0&tm==0,0,1))%>%
+  mutate(VISIT=as.factor(c("V08")))#Making the outcome into a binary where those with 1 on at least one side is graded as a 1 and all else is a 0
+
+#I want to check if I have the same IDs at both visits
+identical(osteoph_8$ID,osteoph_6$ID) #I get back false
+
+#Get the IDs of people with measurements at both visits 
+#Extract list of IDs from each dataset and find shared ID list. 
+os_6_ids<-osteoph_6%>%
+  select(ID)
+
+os_8_ids<-osteoph_8%>%
+  select(ID)
+
+ids_ost<-inner_join(os_6_ids,os_8_ids,by="ID") #Leaving me with 115
+
+##Combine the outcomes for each visit
+ost_outcome<-rbind(osteoph_8,osteoph_6)%>%
+  dplyr::filter(ID %in% ids_ost$ID)%>%
+  group_by(ID)%>%
+  as.data.frame()##Final with medial outcomes
+
+load("combo_test_v6.Rdata")#File with AURC for each subject on visit 8 on median day
+load("combo_test_v8.Rdata")#File with AURC for each subject on visit 6 on median day
+load("/gpfs/fs1/home/o/oespinga/reshani0/OAI_data_long_202202.RData")#This is the outcome data
+##Working with outcomes data 
+outcomes_v8<-OAI_KL_JSW_data%>% #The outcome data 
+  dplyr::filter(VISIT=="V08")%>% #Visit 8 
+  dplyr::filter(ID%in% visits_ID$ID)%>% #Get our sample pop IDs only
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+#By doing it visit by visit I make sure I get those with valid BMI at both visits. 
+
+outcomes_v6<-OAI_KL_JSW_data%>%
+  dplyr::filter(VISIT=="V06")%>% #Visit 6
+  dplyr::filter(ID%in% visits_ID$ID)%>%
+  select(ID,VISIT,AGE,SEX,BMI,RACE)%>%
+  transform(VISIT=as.factor(VISIT))%>%
+  na.omit()
+
+##The above are subjects in the sample population with valid BMI at each visit to find those who have BMI values at both visits:
+ids_BMI<-c(intersect(outcomes_v6$ID,outcomes_v8$ID)) #1309 have BMI at both visits.
+
+outcomes6<-combo_test_v6%>% #Filter the AURC data to include only those 1309
+  dplyr::filter(ID %in%ids_BMI)%>%
+  inner_join(outcomes_v6,by="ID")
+outcomes8<-combo_test_v8%>%
+  dplyr::filter(ID %in%ids_BMI)%>%
+  inner_join(outcomes_v8,by="ID")
+
+##Combine it all:
+ostutcomes6<-ost_outcome%>%
+  inner_join(outcomes6,by=c("ID","VISIT"))
+ostutcome_8<-ost_outcome%>%
+  inner_join(outcomes8,by=c("ID","VISIT"))
+
+ostoutcome<-rbind(ostutcomes6,ostutcome_8)#Final combined
+
+
+mixed_model <- mixed_model(
+  fixed = osteo ~ AURC + AGE + SEX + BMI + RACE,
+  random = ~ VISIT|ID,
+  family = binomial,
+  data = ostoutcome,control = list(max_coef_value=100, iter_EM = 0))
+
+```
